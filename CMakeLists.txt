@@ -24,6 +24,11 @@ FetchContent_Declare(
     GIT_TAG release-3.2.8
     GIT_SHALLOW TRUE)
 FetchContent_MakeAvailable(SDL3)
+if(APPLE)
+    # SDL keeps calling older Cocoa/Metal APIs for compatibility; with our 13.3 deployment
+    # target those show up as deprecation warnings in SDL's own sources
+    target_compile_options(SDL3-static PRIVATE -Wno-deprecated-declarations)
+endif()
 
 # compile assets/ into the executable so it needs nothing but the optional wave/ folder
 set(embedded_sources)
