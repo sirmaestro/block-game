@@ -5,6 +5,19 @@ Windows 95/98/Me/2000. The original (`block130.exe`) needs exclusive 640x480 256
 run properly on current Windows. This rebuild reproduces its game logic, constants and screens from the
 decompiled binary, and runs in a scalable window.
 
+<p align="center">
+  <img src="docs/screenshots/gameplay.png" width="640" alt="Stage 16: blocks shattering into fragments as balls tear through them">
+</p>
+
+## Screenshots
+
+<p align="center">
+  <img src="docs/screenshots/title.png" width="49%" alt="Title screen with the rotating 3D dot logo">
+  <img src="docs/screenshots/ready.png" width="49%" alt="Stage intro: 3D READY text over stage 16">
+  <img src="docs/screenshots/fountain.png" width="49%" alt="Broken cyan blocks erupting into a fountain of balls">
+  <img src="docs/screenshots/clear.png" width="49%" alt="Stage clear with a new record">
+</p>
+
 ## Download
 
 Get `BLOCK-1.30-win64.zip` from the Releases page, unzip it anywhere and run `block.exe`. No installer and no
@@ -75,4 +88,5 @@ Deliberate changes, everything else follows the original including its quirks:
 | `re/` | reverse-engineering notes (`NOTES.md`, `notes/`), Ghidra decompile (`game.c`) and tooling |
 | `shim/` | an earlier experiment: a hook DLL that forces the original exe into windowed mode |
 | `wave/` | sound effects and music, played from next to the exe |
+| `docs/screenshots/` | the screenshots in this readme (native 640x480 frames) |
 | `original/` | the original `block130.exe` and its Japanese readme (`README.TXT` is Shift-JIS; `README.utf8.txt` is a UTF-8 copy) |

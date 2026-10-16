@@ -4,6 +4,7 @@
 *.ico binary
 *.wav binary
 *.exe binary
+*.png binary
 
 # Shift-JIS text from the original release, kept byte-for-byte
 original/README.TXT binary
