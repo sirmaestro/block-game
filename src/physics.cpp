@@ -669,7 +669,7 @@ void Game::update_items_and_debris()
         {
             vx = 0.1;
         }
-        balls_.push_back({b.fx[0] + 14.0, b.fy[0] + 6.0, vx, vy, 8});
+        balls_.push_back({b.fx[0] + 14.0, b.fy[0] + 6.0, vx, vy, 8, next_ball_id_++});
         if (b.type == 6)
         {
             b.state = block_breaking; // red: one ball, then debris

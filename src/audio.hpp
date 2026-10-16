@@ -44,8 +44,8 @@ class Audio
     void play(Sfx id, bool loop = false);
     void stop(Sfx id);
 
-    // Master volume from the options slider, 0..128.
-    void set_master_volume(double slider);
+    // Volume sliders, 0..128 each: the original master volume, and the rebuild's music and sound levels.
+    void set_volumes(double master, double music, double sound);
 
     // Keeps looping sounds fed; call once per frame.
     void update();
@@ -56,6 +56,7 @@ class Audio
         SDL_AudioStream *stream{};
         std::vector<Uint8> data;
         float gain = 1.0f;
+        bool music = false;
         bool looping = false;
     };
 
@@ -64,4 +65,6 @@ class Audio
     SDL_AudioDeviceID device_{};
     std::array<Voice, static_cast<std::size_t>(Sfx::count)> voices_{};
     float master_gain_ = 1.0f;
+    float music_gain_ = 1.0f;
+    float sound_gain_ = 1.0f;
 };

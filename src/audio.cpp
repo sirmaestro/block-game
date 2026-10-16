@@ -1,6 +1,7 @@
 #include "audio.hpp"
 
 #include <cmath>
+#include <iterator>
 
 namespace
 {
@@ -9,20 +10,29 @@ struct SoundFile
 {
     const char *name;
     int volume_mb; // per-sound attenuation the original set, hundredths of a dB
+    bool music;    // follows the music volume rather than the sound volume
 };
 
 constexpr SoundFile sound_files[] = {
-    {"block.wav", -500},   {"title.wav", 0},     {"ball.wav", -1200},     {"pad.wav", -1200},
-    {"gameover.wav", 0},   {"bgm.wav", 0},       {"clear.wav", 0},        {"block2.wav", -200},
-    {"big.wav", -500},     {"small.wav", -500},  {"error.wav", 0},        {"item.wav", 0},
-    {"open.wav", 0},       {"close.wav", 0},     {"change.wav", 0},       {"ending.wav", 0},
-    {"ranking.wav", 0},    {"nameentry.wav", 0}, {"mugen.wav", 0},        {"reverse.wav", 0},
+    {"block.wav", -500, false},   {"title.wav", 0, true},      {"ball.wav", -1200, false},
+    {"pad.wav", -1200, false},    {"gameover.wav", 0, true},   {"bgm.wav", 0, true},
+    {"clear.wav", 0, true},       {"block2.wav", -200, false}, {"big.wav", -500, false},
+    {"small.wav", -500, false},   {"error.wav", 0, false},     {"item.wav", 0, false},
+    {"open.wav", 0, false},       {"close.wav", 0, false},     {"change.wav", 0, false},
+    {"ending.wav", 0, true},      {"ranking.wav", 0, true},    {"nameentry.wav", 0, true},
+    {"mugen.wav", 0, true},       {"reverse.wav", 0, false},
 };
 static_assert(std::size(sound_files) == static_cast<std::size_t>(Sfx::count));
 
 float millibels_to_gain(double mb)
 {
     return mb <= -10000.0 ? 0.0f : static_cast<float>(std::pow(10.0, mb / 2000.0));
+}
+
+// the original's volume curve: trunc(-10000 * (1 - (v/128)^0.1)) hundredths of a dB
+float slider_to_gain(double slider)
+{
+    return millibels_to_gain(std::trunc(-10000.0 * (1.0 - std::pow(slider / 128.0, 0.1))));
 }
 
 }
@@ -40,6 +50,7 @@ bool Audio::init(const std::filesystem::path &wave_dir)
     {
         auto &voice = voices_[i];
         voice.gain = millibels_to_gain(sound_files[i].volume_mb);
+        voice.music = sound_files[i].music;
 
         const auto path = (wave_dir / sound_files[i].name).string();
         SDL_AudioSpec spec{};
@@ -101,11 +112,11 @@ void Audio::stop(Sfx id)
     voice.looping = false;
 }
 
-void Audio::set_master_volume(double slider)
+void Audio::set_volumes(double master, double music, double sound)
 {
-    // the original's curve: primary buffer volume = trunc(-10000 * (1 - (v/128)^0.1)) mB
-    const double mb = std::trunc(-10000.0 * (1.0 - std::pow(slider / 128.0, 0.1)));
-    master_gain_ = millibels_to_gain(mb);
+    master_gain_ = slider_to_gain(master);
+    music_gain_ = slider_to_gain(music);
+    sound_gain_ = slider_to_gain(sound);
     for (auto &voice : voices_)
     {
         apply_gain(voice);
@@ -128,6 +139,6 @@ void Audio::apply_gain(Voice &voice) const
 {
     if (voice.stream)
     {
-        SDL_SetAudioStreamGain(voice.stream, voice.gain * master_gain_);
+        SDL_SetAudioStreamGain(voice.stream, voice.gain * master_gain_ * (voice.music ? music_gain_ : sound_gain_));
     }
 }

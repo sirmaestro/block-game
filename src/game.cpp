@@ -4,12 +4,14 @@
 
 #include <algorithm>
 #include <cmath>
+#include <utility>
 
-Game::Game(Gfx &gfx, Audio &audio, std::vector<stages::Stage> stage_data, std::filesystem::path save_dir)
-    : gfx_(gfx), audio_(audio), stage_data_(std::move(stage_data)), save_dir_(std::move(save_dir))
+Game::Game(Gfx &gfx, Audio &audio, settings::Settings &settings, std::vector<stages::Stage> stage_data,
+           std::filesystem::path save_dir)
+    : gfx_(gfx), audio_(audio), stage_data_(std::move(stage_data)), save_dir_(std::move(save_dir)),
+      data_(save::load(save_dir_)), settings_(settings)
 {
-    data_ = save::load(save_dir_);
-    audio_.set_master_volume(data_.volume);
+    apply_volumes();
     rand_seed_ = static_cast<unsigned>(SDL_GetTicks());
     stage_rank_this_run_.fill(10);
     reset_windows();
@@ -22,6 +24,45 @@ void Game::save_data()
     {
         SDL_Log("could not save to %s", save_dir_.string().c_str());
     }
+}
+
+bool Game::take_settings_changed()
+{
+    const bool changed = settings_changed_;
+    settings_changed_ = false;
+    return changed;
+}
+
+void Game::apply_volumes()
+{
+    audio_.set_volumes(data_.volume, settings_.music_volume, settings_.sound_volume);
+}
+
+void Game::focus_lost()
+{
+    left_button_up();
+    // the original kept running when it lost focus; pause instead, as a key press would
+    if (in_game_state() && pause_windows_closed())
+    {
+        key_down();
+    }
+}
+
+LiveOffsets Game::live_offsets() const
+{
+    LiveOffsets live;
+    const Point now = cursor();
+    live.cursor_dx = now.x - drawn_cursor_.x;
+    live.cursor_dy = now.y - drawn_cursor_.y;
+    if (state_ == State::play && pause_windows_closed())
+    {
+        // the paddle follows the mouse at the display rate, clamped as update_paddle() will clamp it
+        const int lo = 8 * paddle_units_ + 16;
+        const int hi = (62 - paddle_units_) * 8;
+        live.paddle = true;
+        live.paddle_dx = std::clamp(now.x, lo, std::max(lo, hi)) - drawn_paddle_x_;
+    }
+    return live;
 }
 
 // ---- helpers ------------------------------------------------------------------------------------------
@@ -99,6 +140,12 @@ void Game::reset_windows()
 void Game::tick(int dt_ms)
 {
     gfx_.begin_frame();
+    run_tick(dt_ms);
+    drawn_cursor_ = cursor();
+}
+
+void Game::run_tick(int dt_ms)
+{
 
     switch (state_)
     {
@@ -123,6 +170,14 @@ void Game::tick(int dt_ms)
             if (windows_[win_broken].state != closed)
             {
                 broken_window();
+            }
+            if (windows_[win_screen].state != closed)
+            {
+                screen_window();
+            }
+            if (windows_[win_mouse].state != closed)
+            {
+                mouse_window();
             }
             if (windows_[win_mode_select].state != closed)
             {
@@ -341,7 +396,7 @@ void Game::right_button_down()
     if (balls_.size() < 500 && state_ == State::play && (infinite_ || stock_ > 0))
     {
         play(Sfx::ball);
-        balls_.push_back({double(paddle_x_), paddle_y_ - 8.0 - ball_radius_, 0.8, -4.0, ball_radius_});
+        balls_.push_back({double(paddle_x_), paddle_y_ - 8.0 - ball_radius_, 0.8, -4.0, ball_radius_, next_ball_id_++});
         if (!infinite_)
         {
             --stock_;

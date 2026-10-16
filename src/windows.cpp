@@ -3,7 +3,10 @@
 #include "game.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <format>
+#include <iterator>
+#include <string>
 
 namespace
 {
@@ -16,14 +19,16 @@ struct Geometry
 };
 
 constexpr Geometry geometry[] = {
-    {20, 8, 40, 14},  // options
-    {36, 12, 34, 14}, // adjust volume
+    {20, 6, 40, 17},  // options (rebuild: taller, for the new entries)
+    {36, 10, 34, 18}, // adjust volume (rebuild: music and sound sliders)
     {17, 9, 30, 12},  // pause (time trial)
     {36, 12, 36, 12}, // reset your data
     {36, 12, 42, 14}, // display broken blocks
     {12, 1, 40, 27},  // stage select (free mode pause)
     {25, 9, 30, 12},  // mode select
     {16, 11, 48, 8},  // message
+    {18, 6, 44, 18},  // screen settings (rebuild)
+    {36, 12, 34, 10}, // mouse speed (rebuild)
 };
 
 constexpr Rect frame_tl{80, 144, 8, 8};
@@ -155,35 +160,64 @@ void Game::options_window()
 
     const Point p = cursor();
     const bool active = windows_[win_volume].state == closed && windows_[win_reset].state == closed &&
-                        windows_[win_broken].state == closed;
+                        windows_[win_broken].state == closed && windows_[win_screen].state == closed &&
+                        windows_[win_mouse].state == closed;
     const auto item = [&](int row, std::string_view s) {
         const bool hover = active && window_row_hit(win_options, row, p);
         window_text(win_options, row, s, hover ? 1 : 0);
         return hover && take_click();
     };
+    const auto open = [&](Win id) {
+        play(Sfx::open);
+        windows_[id].state = opening;
+    };
 
     window_text(win_options, 1, "OPTION", 2);
     if (item(4, "ADJUST VOLUME"))
     {
-        play(Sfx::open);
-        windows_[win_volume].state = opening;
+        open(win_volume);
     }
-    if (item(6, "RESET YOUR DATA"))
+    if (item(6, "SCREEN SETTINGS"))
     {
-        play(Sfx::open);
-        windows_[win_reset].state = opening;
+        open(win_screen);
     }
-    if (item(8, "DISPLAY BROKEN BLOCKS"))
+    if (item(8, "MOUSE SPEED"))
     {
-        play(Sfx::open);
-        windows_[win_broken].state = opening;
+        open(win_mouse);
     }
-    if (item(11, "CLOSE"))
+    if (item(10, "RESET YOUR DATA"))
+    {
+        open(win_reset);
+    }
+    if (item(12, "DISPLAY BROKEN BLOCKS"))
+    {
+        open(win_broken);
+    }
+    if (item(15, "CLOSE"))
     {
         play(Sfx::close);
         win.state = closing;
     }
     gfx_.cursor(p.x, p.y);
+}
+
+// A 0..128 slider drawn like the original volume control; follows the mouse while the button is held on its
+// row. Returns true when the value changed.
+bool Game::volume_slider(Win id, int row, double &value, Point p)
+{
+    const auto &win = windows_[id];
+    bool changed = false;
+    if (window_row_hit(id, row, p) && left_down_)
+    {
+        const double v = std::clamp(double(p.x - (win.x * 8 + 64)), 0.0, 128.0);
+        changed = v != value;
+        value = v;
+    }
+    gfx_.blit(win.x * 8 + 72, (win.y + row) * 16, sprite::volume_track);
+    gfx_.blit(win.x * 8 + 64 + static_cast<int>(value), (win.y + row) * 16, sprite::ball_normal);
+    gfx_.text(win.x * 8 + 26, (win.y + row) * 16, "MIN", 0);
+    gfx_.text((win.x + win.w) * 8 - 66, (win.y + row) * 16, "MAX", 0);
+    return changed;
 }
 
 void Game::volume_window()
@@ -204,23 +238,22 @@ void Game::volume_window()
     }
 
     const Point p = cursor();
-    // the slider follows the mouse while the button is held
-    if (window_row_hit(win_volume, 4, p) && left_down_)
-    {
-        data_.volume = std::clamp(double(p.x - (win.x * 8 + 64)), 0.0, 128.0);
-        audio_.set_master_volume(data_.volume);
-    }
-    const bool test = window_row_hit(win_volume, 8, p);
-    const bool close = window_row_hit(win_volume, 11, p);
-
-    gfx_.blit(win.x * 8 + 72, (win.y + 4) * 16, sprite::volume_track);
-    gfx_.blit(win.x * 8 + 64 + static_cast<int>(data_.volume), (win.y + 4) * 16, sprite::ball_normal);
     window_text(win_volume, 1, "ADJUST VOLUME", 2);
-    gfx_.text(win.x * 8 + 26, (win.y + 4) * 16, "MIN", 0);
-    gfx_.text((win.x + win.w) * 8 - 66, (win.y + 4) * 16, "MAX", 0);
-    window_text(win_volume, 8, "TEST", test ? 1 : 0);
-    window_text(win_volume, 11, "CLOSE", close ? 1 : 0);
+    window_text(win_volume, 3, "MASTER", 0);
+    window_text(win_volume, 6, "MUSIC", 0);
+    window_text(win_volume, 9, "SOUND", 0);
+    bool changed = volume_slider(win_volume, 4, data_.volume, p);
+    changed |= volume_slider(win_volume, 7, settings_.music_volume, p);
+    changed |= volume_slider(win_volume, 10, settings_.sound_volume, p);
+    if (changed)
+    {
+        apply_volumes();
+    }
 
+    const bool test = window_row_hit(win_volume, 13, p);
+    const bool close = window_row_hit(win_volume, 16, p);
+    window_text(win_volume, 13, "TEST", test ? 1 : 0);
+    window_text(win_volume, 16, "CLOSE", close ? 1 : 0);
     if ((test || close) && take_click())
     {
         if (test)
@@ -232,7 +265,121 @@ void Game::volume_window()
             play(Sfx::close);
             win.state = closing;
             save_data();
+            settings_changed_ = true;
         }
+    }
+    gfx_.cursor(p.x, p.y);
+}
+
+void Game::screen_window()
+{
+    window_frame(win_screen);
+    auto &win = windows_[win_screen];
+    if (win.state == closing)
+    {
+        if (window_close_step(win_screen))
+        {
+            window_reset(win_screen);
+        }
+        return;
+    }
+    if (!window_open_step(win_screen))
+    {
+        return;
+    }
+
+    auto &s = settings_;
+    constexpr std::string_view display_names[] = {"WINDOW", "BORDERLESS", "FULL SCREEN"};
+    constexpr std::string_view scaling_names[] = {"PIXEL PERFECT", "FIT", "STRETCH"};
+    const auto on_off = [](bool on) { return on ? "ON" : "OFF"; };
+    const auto next = [](auto value, int count) { return static_cast<decltype(value)>((int(value) + 1) % count); };
+
+    const Point p = cursor();
+    const auto item = [&](int row, const std::string &label) {
+        const bool hover = window_row_hit(win_screen, row, p);
+        window_text(win_screen, row, label, hover ? 1 : 0);
+        return hover && take_click();
+    };
+
+    window_text(win_screen, 1, "SCREEN SETTINGS", 2);
+    bool changed = false;
+    if (item(3, std::format("DISPLAY : {}", display_names[int(s.display)])))
+    {
+        s.display = next(s.display, 3);
+        changed = true;
+    }
+    if (item(5, std::format("SCALING : {}", scaling_names[int(s.scaling)])))
+    {
+        s.scaling = next(s.scaling, 3);
+        changed = true;
+    }
+    if (item(7, std::format("SIDE FRAME : {}", on_off(s.side_frame))))
+    {
+        s.side_frame = !s.side_frame;
+        changed = true;
+    }
+    if (item(9, std::format("VSYNC : {}", on_off(s.vsync))))
+    {
+        s.vsync = !s.vsync;
+        changed = true;
+    }
+    const auto limit = s.fps_limit ? std::format("{}", s.fps_limit) : std::string{"NONE"};
+    if (item(11, std::format("FPS LIMIT : {}", limit)))
+    {
+        const auto it = std::ranges::find(settings::fps_limits, s.fps_limit);
+        const auto i = it == std::end(settings::fps_limits) ? 0 : it - std::begin(settings::fps_limits);
+        s.fps_limit = settings::fps_limits[(i + 1) % std::size(settings::fps_limits)];
+        changed = true;
+    }
+    if (item(13, std::format("SMOOTH MOTION : {}", on_off(s.smooth_motion))))
+    {
+        s.smooth_motion = !s.smooth_motion;
+        changed = true;
+    }
+    if (changed)
+    {
+        play(Sfx::open);
+        settings_changed_ = true;
+    }
+    if (item(16, "CLOSE"))
+    {
+        play(Sfx::close);
+        win.state = closing;
+    }
+    gfx_.cursor(p.x, p.y);
+}
+
+void Game::mouse_window()
+{
+    window_frame(win_mouse);
+    auto &win = windows_[win_mouse];
+    if (win.state == closing)
+    {
+        if (window_close_step(win_mouse))
+        {
+            window_reset(win_mouse);
+        }
+        return;
+    }
+    if (!window_open_step(win_mouse))
+    {
+        return;
+    }
+
+    const Point p = cursor();
+    window_text(win_mouse, 1, "MOUSE SPEED", 2);
+    volume_slider(win_mouse, 4, settings_.mouse_speed, p);
+    // shown as a multiplier, formatted from integers (floating-point std::format needs macOS 13.3)
+    const int hundredths = static_cast<int>(std::lround(settings::mouse_multiplier(settings_.mouse_speed) * 100.0));
+    window_text(win_mouse, 6, std::format("x{}.{:02}", hundredths / 100, hundredths % 100), 0);
+
+    const bool close = window_row_hit(win_mouse, 8, p);
+    window_text(win_mouse, 8, "CLOSE", close ? 1 : 0);
+    if (close && take_click())
+    {
+        play(Sfx::close);
+        win.state = closing;
+        settings_changed_ = true;
     }
     gfx_.cursor(p.x, p.y);
 }
@@ -397,7 +544,7 @@ void Game::reset_window()
             // like the original, OK resets but leaves the window open
             play(Sfx::change);
             data_ = save::Data{};
-            audio_.set_master_volume(data_.volume);
+            apply_volumes();
             stage_rank_this_run_.fill(10);
             total_rank_this_run_ = 10;
             save_data();

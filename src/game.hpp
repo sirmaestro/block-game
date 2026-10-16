@@ -9,6 +9,7 @@
 #include "audio.hpp"
 #include "gfx.hpp"
 #include "save.hpp"
+#include "settings.hpp"
 #include "stages.hpp"
 #include "voxels.hpp"
 
@@ -20,8 +21,11 @@ class Game
     static constexpr int screen_width = 640;
     static constexpr int screen_height = 480;
     static constexpr int ticks_per_second = 60;
+    static constexpr const char *version_short = "Ver.1.40";
+    static constexpr const char *version_long = "Version 1.40";
 
-    Game(Gfx &gfx, Audio &audio, std::vector<stages::Stage> stage_data, std::filesystem::path save_dir);
+    Game(Gfx &gfx, Audio &audio, settings::Settings &settings, std::vector<stages::Stage> stage_data,
+         std::filesystem::path save_dir);
 
     // One frame of the original main loop (FUN_00407fa0). Records the frame's sprites into gfx.
     void tick(int dt_ms);
@@ -33,8 +37,23 @@ class Game
     void right_button_down();
     void mouse_moved(double dx, double dy);
 
+    // Rebuild: the window lost focus, so pause like a key press would.
+    void focus_lost();
+
     // Writes block130.sys / block130.dat (the original saved only on exit).
     void save_data();
+
+    // True once after the options windows changed a display or audio setting.
+    bool take_settings_changed();
+
+    // Where the paddle and cursor should be drawn now, relative to the last tick, for smooth motion.
+    LiveOffsets live_offsets() const;
+
+    // Frames per second actually shown, for the HUD.
+    void set_display_fps(int fps)
+    {
+        display_fps_ = fps;
+    }
 
   private:
     // ---- types -------------------------------------------------------------------------------------
@@ -61,6 +80,8 @@ class Game
         win_stage_select,
         win_mode_select,
         win_message,
+        win_screen, // rebuild
+        win_mouse,  // rebuild
         win_count
     };
 
@@ -81,6 +102,7 @@ class Game
     {
         double x, y, vx, vy;
         int r;
+        std::uint32_t id; // rebuild: identifies the ball for smooth motion
     };
 
     // block states
@@ -118,6 +140,7 @@ class Game
     };
 
     // ---- core (game.cpp) ---------------------------------------------------------------------------
+    void run_tick(int dt_ms);
     void load_stage();
     void reset_windows();
     int rand();
@@ -167,6 +190,10 @@ class Game
     void stage_select_window();
     void mode_select_window();
     void message_window(std::string_view message);
+    void screen_window();
+    void mouse_window();
+    bool volume_slider(Win id, int row, double &value, Point p);
+    void apply_volumes();
     void pause_window_actions(Win id, int try_again_row, int end_game_row, int cancel_row, Point p, bool active);
 
     // ---- collaborators -------------------------------------------------------------------------------
@@ -175,6 +202,11 @@ class Game
     std::vector<stages::Stage> stage_data_;
     std::filesystem::path save_dir_;
     save::Data data_;
+    settings::Settings &settings_;
+    bool settings_changed_ = false;
+    int display_fps_ = ticks_per_second;
+    Point drawn_cursor_{};          // where the last tick drew the cursor
+    int drawn_paddle_x_ = 256;      // where the last tick drew the paddle
 
     // ---- global state (original globals in comments) -----------------------------------------------
     State state_ = State::boot;     // DAT_00421308
@@ -202,6 +234,7 @@ class Game
     std::array<Block, stages::columns * stages::rows> blocks_{};
     int remaining_ = 0;             // DAT_0041d478
     std::vector<Ball> balls_;       // DAT_00498448, max 500
+    std::uint32_t next_ball_id_ = 0;
     int ball_radius_ = 8;           // DAT_0041ce58
     int stock_ = 10;                // DAT_004b8fc8
     bool infinite_ = false;         // DAT_0049f6a0

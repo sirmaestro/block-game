@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <cstdint>
 #include <string_view>
 #include <vector>
 
@@ -25,6 +26,13 @@ class VoxelText
     void clear()
     {
         voxels.clear();
+        ++generation_;
+    }
+
+    // Interpolation id of voxel i; changes whenever the text is rebuilt, so different words never blend.
+    std::uint32_t id(int i) const
+    {
+        return track::id(track::voxel, ((generation_ & 0xffu) << 16) | static_cast<std::uint32_t>(i));
     }
 
     // Appends voxels for `s` (centred on x = 0, rows y = 48 .. -72, z = 0). Returns false when full.
@@ -45,4 +53,5 @@ class VoxelText
 
     std::vector<int> order_;
     std::vector<int> scratch_;
+    std::uint32_t generation_ = 0;
 };

@@ -6,6 +6,7 @@ Writes:
   sprites.bmp  the BITMAP resource unchanged (640x272, 8bpp, magenta colour key)
   stages.txt   the DATA resource (50 stages as a colour-coded 4bpp image) as editable text
   block.ico    the application icon
+  icon.bmp     the same icon as a 32-bit BMP, for the window icon on macOS and Linux
 """
 import pathlib
 import struct
@@ -106,6 +107,9 @@ def main():
     (outdir / "sprites.bmp").write_bytes(dib_to_bmp(bitmaps["BITMAP"]))
     (outdir / "stages.txt").write_text(stages_text(bitmaps["DATA"]), encoding="ascii", newline="\n")
     (outdir / "block.ico").write_bytes(icon_file(pe))
+    # window icon for macOS / Linux (SDL loads BMP, not ICO)
+    from PIL import Image
+    Image.open(outdir / "block.ico").convert("RGBA").save(outdir / "icon.bmp")
     print("wrote", ", ".join(p.name for p in sorted(outdir.iterdir())))
 
 

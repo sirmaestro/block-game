@@ -14,6 +14,9 @@ std::span<const std::uint8_t> sprites_bmp();
 // Stage layouts as text; format described at the top of assets/stages.txt.
 std::span<const std::uint8_t> stages_txt();
 
+// 32x32 window icon (Windows uses the icon resource in the executable instead).
+std::span<const std::uint8_t> icon_bmp();
+
 inline std::string_view as_text(std::span<const std::uint8_t> bytes)
 {
     return {reinterpret_cast<const char *>(bytes.data()), bytes.size()};

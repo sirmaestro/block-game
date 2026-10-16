@@ -169,19 +169,20 @@ void Game::render_playfield()
     {
         countdown(reverse_ms_, 368);
     }
-    const auto fps_text = std::format("FPS : {}", ticks_per_second);
+    const auto fps_text = std::format("FPS : {}", display_fps_);
     gfx_.text((1136 - Gfx::text_width(fps_text)) / 2, 432, fps_text, 0);
-    gfx_.text((1136 - Gfx::text_width("Ver.1.30")) / 2, 448, "Ver.1.30", 0);
+    gfx_.text((1136 - Gfx::text_width(version_short)) / 2, 448, version_short, 0);
 
     // paddle
+    drawn_paddle_x_ = paddle_x_;
     const int py = static_cast<int>(paddle_y_) - 8;
     const int w = paddle_units_;
-    gfx_.blit(paddle_x_ - 8 * w, py, sprite::paddle_left);
+    gfx_.blit(paddle_x_ - 8 * w, py, sprite::paddle_left, track::id(track::paddle, 0));
     for (int k = 0; k <= w - 3; ++k)
     {
-        gfx_.blit(paddle_x_ + (2 + 2 * k - w) * 8, py, sprite::paddle_middle);
+        gfx_.blit(paddle_x_ + (2 + 2 * k - w) * 8, py, sprite::paddle_middle, track::id(track::paddle, 2 + k));
     }
-    gfx_.blit(paddle_x_ + 8 * w - 16, py, sprite::paddle_right);
+    gfx_.blit(paddle_x_ + 8 * w - 16, py, sprite::paddle_right, track::id(track::paddle, 1));
 
     // blocks; red and cyan blocks show a ball through their see-through middle
     for (const auto &b : blocks_)
@@ -205,7 +206,8 @@ void Game::render_playfield()
     {
         if (item.state != item_gone)
         {
-            gfx_.blit(static_cast<int>(item.x) - 16, static_cast<int>(item.y) - 8, sprite::item(item.type));
+            gfx_.blit(static_cast<int>(item.x) - 16, static_cast<int>(item.y) - 8, sprite::item(item.type),
+                      track::id(track::item, static_cast<std::uint32_t>(&item - items_.data())));
         }
     }
 
@@ -222,7 +224,8 @@ void Game::render_playfield()
             {
                 if (b.alive[f])
                 {
-                    gfx_.blit(static_cast<int>(b.fx[f]) - 2, static_cast<int>(b.fy[f]) - 2, sprite::fragment(b.type, f));
+                    gfx_.blit(static_cast<int>(b.fx[f]) - 2, static_cast<int>(b.fy[f]) - 2, sprite::fragment(b.type, f),
+                              track::id(track::fragment, static_cast<std::uint32_t>(k * 32 + f)));
                 }
             }
         }
@@ -231,7 +234,7 @@ void Game::render_playfield()
     for (const auto &ball : balls_)
     {
         const Rect src = ball.r == 4 ? sprite::ball_small : ball.r == 16 ? sprite::ball_big : sprite::ball_normal;
-        gfx_.blit(static_cast<int>(ball.x) - ball.r, static_cast<int>(ball.y) - ball.r, src);
+        gfx_.blit(static_cast<int>(ball.x) - ball.r, static_cast<int>(ball.y) - ball.r, src, track::id(track::ball, ball.id));
     }
 }
 
@@ -286,7 +289,7 @@ void Game::screen_title()
             const auto sy = project(v.y, cam_z_ + v.z);
             if (sx && sy)
             {
-                gfx_.blit(316 + *sx, 146 - *sy, vox_.rects[v.kind]);
+                gfx_.blit(316 + *sx, 146 - *sy, vox_.rects[v.kind], vox_.id(i));
             }
         }
     }
@@ -299,7 +302,7 @@ void Game::screen_title()
         return hover;
     };
 
-    gfx_.text(centred(640, "Version 1.30"), 192, "Version 1.30", 0);
+    gfx_.text(centred(640, version_long), 192, version_long, 0);
     const bool start = item(18, "GAME START");
     const bool ranking = item(20, "RANKING");
     const bool options = item(22, "OPTIONS");
@@ -384,13 +387,14 @@ void Game::screen_intro()
     }
 
     // drawn in storage order: the original sorts here but does not use the result
-    for (const auto &v : vox_.voxels)
+    for (int i = 0; i < int(vox_.voxels.size()); ++i)
     {
+        const auto &v = vox_.voxels[i];
         const auto sx = project(v.x, cam_z_ + v.z);
         const auto sy = project(v.y, cam_z_ + v.z);
         if (sx && sy)
         {
-            gfx_.blit(252 + *sx, 236 - *sy, vox_.rects[v.kind]);
+            gfx_.blit(252 + *sx, 236 - *sy, vox_.rects[v.kind], vox_.id(i));
         }
     }
 
@@ -438,12 +442,12 @@ void Game::screen_intro()
     const int sx = static_cast<int>(slide_x_);
     if (stage_ != stages::count - 1)
     {
-        gfx_.text(sx, 160, "STAGE", 0);
-        gfx_.digits(sx + 85, 9, std::format("{:02}", stage_ + 1), 0);
+        gfx_.text(sx, 160, "STAGE", 0, track::id(track::text, 0));
+        gfx_.digits(sx + 85, 9, std::format("{:02}", stage_ + 1), 0, track::id(track::text, 0x10));
     }
     else
     {
-        gfx_.text(sx - 4, 160, "FINAL STAGE", 2);
+        gfx_.text(sx - 4, 160, "FINAL STAGE", 2, track::id(track::text, 0));
     }
 }
 
@@ -495,7 +499,7 @@ void Game::screen_clear()
         const auto sy = project(v.y, cam_z_ + v.z);
         if (sx && sy)
         {
-            gfx_.blit(252 + *sx, 196 - *sy, vox_.rects[v.kind]);
+            gfx_.blit(252 + *sx, 196 - *sy, vox_.rects[v.kind], vox_.id(i));
         }
     }
 
@@ -560,7 +564,7 @@ void Game::screen_game_over()
         const auto sy = project(v.y, cam_z_ + v.z);
         if (sx && sy)
         {
-            gfx_.blit(252 + *sx, 156 - *sy, vox_.rects[v.kind]);
+            gfx_.blit(252 + *sx, 156 - *sy, vox_.rects[v.kind], vox_.id(i));
         }
     }
     gfx_.text(130, 256, "Click L Button to Retry !!", 0);
@@ -576,7 +580,7 @@ void Game::screen_ending()
         int colour_offset;
     };
     const Word words[14] = {
-        {"BLOCK", 1},       {"Ver.1.30", 1},   {"PROGRAM", 1}, {"KENTA(22)", 0}, {"STAGE EDIT", 1},
+        {"BLOCK", 1},       {version_short, 1},   {"PROGRAM", 1}, {"KENTA(22)", 0}, {"STAGE EDIT", 1},
         {"KENTA(22),", 0},  {"KENICHI", 0},    {"SPECIAL THANKS", 1}, {"oknit,", 0}, {"MORIZUKI,", 0},
         {"NORIO,", 0},      {"MOJI,", 0},      {"AND...", 0},  {nullptr, 0},
     };
@@ -662,7 +666,8 @@ void Game::screen_ending()
             s = "TOTAL TIME  :  " + format_time(total_ms_);
             colour = 1;
         }
-        gfx_.text(centred(640, s), 96 + 16 * i - end_scroll_px_, s, colour);
+        gfx_.text(centred(640, s), 96 + 16 * i - end_scroll_px_, s, colour,
+                  track::id(track::text, 0x1000 + static_cast<std::uint32_t>(line) * 64));
     }
     for (int x = 0; x < 640; x += 16)
     {
@@ -686,7 +691,7 @@ void Game::screen_ending()
         {
             continue;
         }
-        gfx_.blit(static_cast<int>(sx) - 4, 196 - *sy, vox_.rects[word.colour_offset + v.kind]);
+        gfx_.blit(static_cast<int>(sx) - 4, 196 - *sy, vox_.rects[word.colour_offset + v.kind], vox_.id(i));
     }
 }
 
@@ -808,7 +813,7 @@ void Game::screen_name_entry()
         const auto sy = project(v.y, v.z + 1800.0);
         if (sx && sy)
         {
-            gfx_.blit(316 + *sx, 172 - *sy, vox_.rects[v.kind]);
+            gfx_.blit(316 + *sx, 172 - *sy, vox_.rects[v.kind], vox_.id(i));
         }
     }
 
@@ -870,7 +875,7 @@ void Game::screen_ranking()
         const auto sy = project(v.y, v.z + 1500.0);
         if (sx && sy)
         {
-            gfx_.blit(444 + *sx, -136 - *sy, vox_.rects[v.kind]);
+            gfx_.blit(444 + *sx, -136 - *sy, vox_.rects[v.kind], vox_.id(i));
         }
     }
 

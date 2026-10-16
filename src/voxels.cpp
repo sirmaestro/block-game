@@ -1,5 +1,6 @@
 #include "voxels.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <numeric>
 

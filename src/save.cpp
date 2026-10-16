@@ -3,12 +3,13 @@
 #include <SDL3/SDL.h>
 
 #include <charconv>
-#include <chrono>
 #include <format>
 #include <fstream>
 #include <iterator>
 #include <optional>
 #include <string_view>
+#include <system_error>
+#include <utility>
 #include <vector>
 
 namespace save
@@ -94,7 +95,7 @@ bool write_file(const std::filesystem::path &path, std::string_view contents)
     return !ec;
 }
 
-bool is_writable(const std::filesystem::path &dir)
+[[maybe_unused]] bool is_writable(const std::filesystem::path &dir)
 {
     const auto probe = dir / ".block_write_test";
     {
@@ -114,10 +115,13 @@ bool is_writable(const std::filesystem::path &dir)
 std::filesystem::path directory()
 {
     const std::filesystem::path base{SDL_GetBasePath()};
+#ifndef __APPLE__
+    // portable, like the original; on macOS the base path is inside the app bundle, which must not be written
     if (std::filesystem::exists(base / sys_file) || std::filesystem::exists(base / dat_file) || is_writable(base))
     {
         return base;
     }
+#endif
     char *pref = SDL_GetPrefPath("KENTA", "BLOCK");
     std::filesystem::path path = pref ? pref : base;
     SDL_free(pref);
@@ -238,19 +242,14 @@ int insert(RankTable &table, int time_ms, const std::string &name)
         table[i] = table[i - 1];
     }
 
-    const auto now = std::chrono::zoned_time{std::chrono::current_zone(), std::chrono::system_clock::now()}
-                         .get_local_time();
-    const auto days = std::chrono::floor<std::chrono::days>(now);
-    const std::chrono::year_month_day ymd{days};
-    const std::chrono::hh_mm_ss hms{now - days};
-
-    table[rank] = {time_ms,
-                   static_cast<int>(ymd.year()),
-                   static_cast<int>(static_cast<unsigned>(ymd.month())),
-                   static_cast<int>(static_cast<unsigned>(ymd.day())),
-                   static_cast<int>(hms.hours().count()),
-                   static_cast<int>(hms.minutes().count()),
-                   name};
+    // local date and time, as the original's GetLocalTime
+    SDL_DateTime now{};
+    SDL_Time ticks{};
+    if (SDL_GetCurrentTime(&ticks))
+    {
+        SDL_TimeToDateTime(ticks, &now, true);
+    }
+    table[rank] = {time_ms, now.year, now.month, now.day, now.hour, now.minute, name};
     return rank;
 }
 
