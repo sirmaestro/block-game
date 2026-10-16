@@ -1,0 +1,13 @@
+* text=auto eol=lf
+
+*.bmp binary
+*.ico binary
+*.wav binary
+*.exe binary
+
+# Shift-JIS text from the original release, kept byte-for-byte
+original/README.TXT binary
+wave/readme.txt binary
+
+# decompiler output: keep it out of GitHub's language statistics
+re/game.c linguist-generated=true

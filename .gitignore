@@ -1,0 +1,22 @@
+# build output
+build/
+out/
+CMakeCache.txt
+CMakeFiles/
+CMakeUserPresets.json
+compile_commands.json
+
+# editors and tools
+.vs/
+.vscode/
+.cache/
+.clangd/
+.ycm_extra_conf.*
+*.swp
+.DS_Store
+__pycache__/
+
+# save files and stage overrides created when the game runs from the source folder
+block130.sys
+block130.dat
+/stages.txt

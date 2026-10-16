@@ -1,0 +1,159 @@
+#include "gfx.hpp"
+
+namespace
+{
+
+constexpr int screen_width = 640;
+constexpr int screen_height = 480;
+
+// Font rows: '!'..'?' at +0, '@'..'_' at +16, '`'..'~' at +32 within each 48 px colour band.
+Rect glyph_cell(char c, int colour)
+{
+    const auto uc = static_cast<unsigned char>(c);
+    const int base = uc < 0x40 ? 0x21 : uc < 0x60 ? 0x40 : 0x60;
+    const int row = uc < 0x40 ? 0 : uc < 0x60 ? 16 : 32;
+    return {(uc - base) * 18, colour * 48 + row, Gfx::glyph_width(c) + 2, 16};
+}
+
+}
+
+bool Gfx::init(SDL_Renderer *renderer, std::span<const std::uint8_t> sprite_bmp)
+{
+    renderer_ = renderer;
+    surface_ = SDL_LoadBMP_IO(SDL_IOFromConstMem(sprite_bmp.data(), sprite_bmp.size()), true);
+    if (!surface_)
+    {
+        return false;
+    }
+    SDL_SetSurfaceColorKey(surface_, true, SDL_MapSurfaceRGB(surface_, 255, 0, 255));
+    texture_ = SDL_CreateTextureFromSurface(renderer_, surface_);
+    if (!texture_)
+    {
+        return false;
+    }
+    SDL_SetTextureScaleMode(texture_, SDL_SCALEMODE_NEAREST);
+    ops_.reserve(8192);
+    return true;
+}
+
+void Gfx::shutdown()
+{
+    SDL_DestroyTexture(texture_);
+    SDL_DestroySurface(surface_);
+    texture_ = nullptr;
+    surface_ = nullptr;
+}
+
+void Gfx::begin_frame()
+{
+    ops_.clear();
+}
+
+void Gfx::present() const
+{
+    // the original clears to palette index 255, (4,4,4)
+    SDL_SetRenderDrawColor(renderer_, 4, 4, 4, 255);
+    SDL_RenderClear(renderer_);
+    for (const auto &op : ops_)
+    {
+        const SDL_FRect src{float(op.src.x), float(op.src.y), float(op.src.w), float(op.src.h)};
+        const SDL_FRect dst{float(op.x), float(op.y), float(op.src.w), float(op.src.h)};
+        SDL_RenderTexture(renderer_, texture_, &src, &dst);
+    }
+}
+
+void Gfx::blit(int x, int y, Rect src)
+{
+    if (src.w <= 0 || src.h <= 0)
+    {
+        return;
+    }
+    if (x < 0 || x + src.w > screen_width || y < 0 || y + src.h > screen_height)
+    {
+        return;
+    }
+    ops_.push_back({src, x, y});
+}
+
+int Gfx::glyph_width(char c)
+{
+    switch (c)
+    {
+        case '!': case '\'': case ',': case '.': case ':': case ';': case 'I': case 'i': case 'l': case '|':
+            return 5;
+        case ' ': case '(': case ')': case '[': case ']': case '`': case '{': case '}':
+            return 7;
+        case '<': case '>': case 'j':
+            return 8;
+        case '/':
+            return 9;
+        case '"': case '+': case '-': case '=': case '_':
+            return 10;
+        case '^':
+            return 12;
+        case '#': case '&': case 'G': case '~':
+            return 14;
+        case '@':
+            return 15;
+        case 'M': case 'W': case 'm': case 'w':
+            return 16;
+        default:
+            return 13;
+    }
+}
+
+int Gfx::text_width(std::string_view s)
+{
+    int width = 1;
+    for (const char c : s)
+    {
+        width += glyph_width(c) - 1;
+    }
+    return width;
+}
+
+void Gfx::text(int x, int y, std::string_view s, int colour)
+{
+    for (const char c : s)
+    {
+        if (c >= 0x21 && c <= 0x7e)
+        {
+            blit(x, y, glyph_cell(c, colour));
+        }
+        x += glyph_width(c) - 1;
+    }
+}
+
+void Gfx::digits(int x, int row, std::string_view s, int colour)
+{
+    for (const char c : s)
+    {
+        if (c >= '0' && c <= '9')
+        {
+            blit(x, row * 16, {(c - '0') * 18, 208 + 32 * colour, 15, 32});
+        }
+        x += 12;
+    }
+}
+
+int Gfx::font_pixel_kind(int x, int y) const
+{
+    if (!surface_ || x < 0 || y < 0 || x >= surface_->w || y >= surface_->h)
+    {
+        return -1;
+    }
+    Uint8 r{}, g{}, b{};
+    if (!SDL_ReadSurfacePixel(surface_, x, y, &r, &g, &b, nullptr))
+    {
+        return -1;
+    }
+    if (r == 0xfc && g == 0xfc && b == 0xfc)
+    {
+        return 0;
+    }
+    if (r == 0x04 && g == 0x04 && b == 0x04)
+    {
+        return 1;
+    }
+    return -1;
+}
