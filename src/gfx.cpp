@@ -50,8 +50,10 @@ bool Gfx::init(SDL_Renderer *renderer, std::span<const std::uint8_t> sprite_bmp)
 
 void Gfx::shutdown()
 {
+    SDL_DestroyTexture(upscaled_);
     SDL_DestroyTexture(target_);
     SDL_DestroyTexture(texture_);
+    upscaled_ = nullptr;
     SDL_DestroySurface(surface_);
     target_ = nullptr;
     texture_ = nullptr;
@@ -116,7 +118,7 @@ void Gfx::render(double alpha, const LiveOffsets &live)
     SDL_SetRenderTarget(renderer_, nullptr);
 }
 
-SDL_FRect Gfx::compose(settings::Scaling scaling, bool side_frame)
+SDL_FRect Gfx::compose(settings::Scaling scaling, settings::Filter filter, bool side_frame)
 {
     int out_w = 0, out_h = 0;
     SDL_GetCurrentRenderOutputSize(renderer_, &out_w, &out_h);
@@ -162,7 +164,54 @@ SDL_FRect Gfx::compose(settings::Scaling scaling, bool side_frame)
         SDL_SetTextureColorMod(texture_, 255, 255, 255);
     }
 
+    const double scale_x = dst.w / width, scale_y = dst.h / height;
+    const bool whole = scale_x == std::floor(scale_x) && scale_y == std::floor(scale_y);
+    if (filter == settings::Filter::sharp && !whole)
+    {
+        // "sharp bilinear": scale up by a whole number with hard pixels, then smooth only the last step, so
+        // every pixel is the same size and just its edges are blended
+        const int factor = std::clamp(static_cast<int>(std::ceil(std::max(scale_x, scale_y))), 1, 8);
+        if (factor != upscaled_factor_)
+        {
+            SDL_DestroyTexture(upscaled_);
+            upscaled_ = SDL_CreateTexture(renderer_, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_TARGET, width * factor,
+                                          height * factor);
+            if (upscaled_)
+            {
+                SDL_SetTextureScaleMode(upscaled_, SDL_SCALEMODE_LINEAR);
+            }
+            upscaled_factor_ = upscaled_ ? factor : 0;
+        }
+        if (upscaled_)
+        {
+            SDL_SetRenderTarget(renderer_, upscaled_);
+            SDL_RenderTexture(renderer_, target_, nullptr, nullptr);
+            SDL_SetRenderTarget(renderer_, nullptr);
+            SDL_RenderTexture(renderer_, upscaled_, nullptr, &dst);
+            return dst;
+        }
+    }
     SDL_RenderTexture(renderer_, target_, nullptr, &dst);
+
+    if (filter == settings::Filter::scanlines && scale_y >= 2.0)
+    {
+        // darken the lower part of every game row, snapped to whole output pixels
+        std::vector<SDL_FRect> lines;
+        lines.reserve(height);
+        for (int y = 0; y < height; ++y)
+        {
+            const float top = std::round(dst.y + float((y + 0.6) * scale_y));
+            const float bottom = std::round(dst.y + float((y + 1) * scale_y));
+            if (bottom > top)
+            {
+                lines.push_back({dst.x, top, dst.w, bottom - top});
+            }
+        }
+        SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
+        SDL_SetRenderDrawColor(renderer_, 0, 0, 0, 110);
+        SDL_RenderFillRects(renderer_, lines.data(), static_cast<int>(lines.size()));
+        SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_NONE);
+    }
     return dst;
 }
 

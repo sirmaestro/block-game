@@ -19,6 +19,9 @@ __pycache__/
 # save files and stage overrides created when the game runs from the source folder
 block130.sys
 block130.dat
+block.sav
 block.ini
+replays/
 /stages.txt
+/stages/
 block.exe

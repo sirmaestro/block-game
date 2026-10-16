@@ -4,6 +4,8 @@
 
 #include <cmath>
 
+#include "dmath.hpp"
+
 namespace
 {
 
@@ -17,7 +19,7 @@ constexpr double reversed_gravity = -0.085;
 double direction(double dx, double dy)
 {
     const double length = std::sqrt(dx * dx + dy * dy);
-    double angle = std::acos(dx / length);
+    double angle = dmath::acos(dx / length);
     if (dy / length < 0.0)
     {
         angle = two_pi - angle;
@@ -172,7 +174,7 @@ void Game::destroy_block(int k, double x, double y, double vx, double vy)
     else
     {
         b.state = block_breaking;
-        if (data_.show_broken_blocks)
+        if (settings_.show_broken_blocks)
         {
             dying_.push_back(k);
         }
@@ -202,7 +204,7 @@ void Game::destroy_block(int k, double x, double y, double vx, double vy)
     }
     --remaining_;
 
-    if (data_.show_broken_blocks)
+    if (settings_.show_broken_blocks)
     {
         // fragments fly away from the impact point: 8 * speed^2 * direction / distance^1.6
         const double s2 = vx * vx + vy * vy;
@@ -211,6 +213,7 @@ void Game::destroy_block(int k, double x, double y, double vx, double vy)
             const double dx = b.fx[f] - x, dy = b.fy[f] - y;
             const double d2 = dx * dx + dy * dy;
             const double d = std::sqrt(d2);
+            // std::pow may differ between platforms, but fragments are only for show
             b.fvx[f] = (dx / d) * s2 * 8.0 / std::pow(d2, 0.8);
             b.fvy[f] = (dy / d) * s2 * 8.0 / std::pow(d2, 0.8);
         }
@@ -271,7 +274,7 @@ void Game::physics_step()
         if (paddle_x_ - half_w < x && x <= paddle_x_ + half_w && paddle_y_ - 8.0 - r < y && y <= paddle_y_ + 16.0)
         {
             play(Sfx::pad);
-            const double s = std::sin(paddle_tilt_ * deg_to_rad), c = std::cos(paddle_tilt_ * deg_to_rad);
+            const double s = dmath::sin(paddle_tilt_ * deg_to_rad), c = dmath::cos(paddle_tilt_ * deg_to_rad);
             const double relative = paddle_vy_ - vy;
             const double nvx = c * vx - relative * s;
             const double nvy = vx * s + relative * c;

@@ -17,6 +17,9 @@ std::span<const std::uint8_t> stages_txt();
 // 32x32 window icon (Windows uses the icon resource in the executable instead).
 std::span<const std::uint8_t> icon_bmp();
 
+// Built-in Ogg Vorbis sound by file stem (e.g. "bgm"); empty if there is none.
+std::span<const std::uint8_t> sound(std::string_view name);
+
 inline std::string_view as_text(std::span<const std::uint8_t> bytes)
 {
     return {reinterpret_cast<const char *>(bytes.data()), bytes.size()};

@@ -4,9 +4,11 @@
 
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
 #include <format>
 #include <iterator>
 #include <string>
+#include <system_error>
 
 namespace
 {
@@ -24,11 +26,11 @@ constexpr Geometry geometry[] = {
     {17, 9, 30, 12},  // pause (time trial)
     {36, 12, 36, 12}, // reset your data
     {36, 12, 42, 14}, // display broken blocks
-    {12, 1, 40, 27},  // stage select (free mode pause)
-    {25, 9, 30, 12},  // mode select
+    {2, 1, 60, 28},   // stage select (free mode pause; rebuild: a page of stage thumbnails over the playfield)
+    {20, 9, 40, 13},  // mode select (rebuild: wider and taller, for the stage pack)
     {16, 11, 48, 8},  // message
-    {18, 6, 44, 18},  // screen settings (rebuild)
-    {36, 12, 34, 10}, // mouse speed (rebuild)
+    {18, 5, 44, 20},  // screen settings (rebuild)
+    {34, 9, 38, 14},  // controls (rebuild)
 };
 
 constexpr Rect frame_tl{80, 144, 8, 8};
@@ -161,7 +163,7 @@ void Game::options_window()
     const Point p = cursor();
     const bool active = windows_[win_volume].state == closed && windows_[win_reset].state == closed &&
                         windows_[win_broken].state == closed && windows_[win_screen].state == closed &&
-                        windows_[win_mouse].state == closed;
+                        windows_[win_controls].state == closed;
     const auto item = [&](int row, std::string_view s) {
         const bool hover = active && window_row_hit(win_options, row, p);
         window_text(win_options, row, s, hover ? 1 : 0);
@@ -181,9 +183,9 @@ void Game::options_window()
     {
         open(win_screen);
     }
-    if (item(8, "MOUSE SPEED"))
+    if (item(8, "CONTROLS"))
     {
-        open(win_mouse);
+        open(win_controls);
     }
     if (item(10, "RESET YOUR DATA"))
     {
@@ -242,7 +244,7 @@ void Game::volume_window()
     window_text(win_volume, 3, "MASTER", 0);
     window_text(win_volume, 6, "MUSIC", 0);
     window_text(win_volume, 9, "SOUND", 0);
-    bool changed = volume_slider(win_volume, 4, data_.volume, p);
+    bool changed = volume_slider(win_volume, 4, settings_.master_volume, p);
     changed |= volume_slider(win_volume, 7, settings_.music_volume, p);
     changed |= volume_slider(win_volume, 10, settings_.sound_volume, p);
     if (changed)
@@ -264,7 +266,6 @@ void Game::volume_window()
         {
             play(Sfx::close);
             win.state = closing;
-            save_data();
             settings_changed_ = true;
         }
     }
@@ -291,6 +292,7 @@ void Game::screen_window()
     auto &s = settings_;
     constexpr std::string_view display_names[] = {"WINDOW", "BORDERLESS", "FULL SCREEN"};
     constexpr std::string_view scaling_names[] = {"PIXEL PERFECT", "FIT", "STRETCH"};
+    constexpr std::string_view filter_names[] = {"NEAREST", "SHARP", "SCANLINES"};
     const auto on_off = [](bool on) { return on ? "ON" : "OFF"; };
     const auto next = [](auto value, int count) { return static_cast<decltype(value)>((int(value) + 1) % count); };
 
@@ -313,25 +315,30 @@ void Game::screen_window()
         s.scaling = next(s.scaling, 3);
         changed = true;
     }
-    if (item(7, std::format("SIDE FRAME : {}", on_off(s.side_frame))))
+    if (item(7, std::format("FILTER : {}", filter_names[int(s.filter)])))
+    {
+        s.filter = next(s.filter, 3);
+        changed = true;
+    }
+    if (item(9, std::format("SIDE FRAME : {}", on_off(s.side_frame))))
     {
         s.side_frame = !s.side_frame;
         changed = true;
     }
-    if (item(9, std::format("VSYNC : {}", on_off(s.vsync))))
+    if (item(11, std::format("VSYNC : {}", on_off(s.vsync))))
     {
         s.vsync = !s.vsync;
         changed = true;
     }
     const auto limit = s.fps_limit ? std::format("{}", s.fps_limit) : std::string{"NONE"};
-    if (item(11, std::format("FPS LIMIT : {}", limit)))
+    if (item(13, std::format("FPS LIMIT : {}", limit)))
     {
         const auto it = std::ranges::find(settings::fps_limits, s.fps_limit);
         const auto i = it == std::end(settings::fps_limits) ? 0 : it - std::begin(settings::fps_limits);
         s.fps_limit = settings::fps_limits[(i + 1) % std::size(settings::fps_limits)];
         changed = true;
     }
-    if (item(13, std::format("SMOOTH MOTION : {}", on_off(s.smooth_motion))))
+    if (item(15, std::format("SMOOTH MOTION : {}", on_off(s.smooth_motion))))
     {
         s.smooth_motion = !s.smooth_motion;
         changed = true;
@@ -341,7 +348,7 @@ void Game::screen_window()
         play(Sfx::open);
         settings_changed_ = true;
     }
-    if (item(16, "CLOSE"))
+    if (item(18, "CLOSE"))
     {
         play(Sfx::close);
         win.state = closing;
@@ -349,32 +356,40 @@ void Game::screen_window()
     gfx_.cursor(p.x, p.y);
 }
 
-void Game::mouse_window()
+void Game::controls_window()
 {
-    window_frame(win_mouse);
-    auto &win = windows_[win_mouse];
+    window_frame(win_controls);
+    auto &win = windows_[win_controls];
     if (win.state == closing)
     {
-        if (window_close_step(win_mouse))
+        if (window_close_step(win_controls))
         {
-            window_reset(win_mouse);
+            window_reset(win_controls);
         }
         return;
     }
-    if (!window_open_step(win_mouse))
+    if (!window_open_step(win_controls))
     {
         return;
     }
 
-    const Point p = cursor();
-    window_text(win_mouse, 1, "MOUSE SPEED", 2);
-    volume_slider(win_mouse, 4, settings_.mouse_speed, p);
     // shown as a multiplier, formatted from integers (floating-point std::format needs macOS 13.3)
-    const int hundredths = static_cast<int>(std::lround(settings::mouse_multiplier(settings_.mouse_speed) * 100.0));
-    window_text(win_mouse, 6, std::format("x{}.{:02}", hundredths / 100, hundredths % 100), 0);
+    const auto multiplier = [](double slider) {
+        const int hundredths = static_cast<int>(std::lround(settings::mouse_multiplier(slider) * 100.0));
+        return std::format("x{}.{:02}", hundredths / 100, hundredths % 100);
+    };
 
-    const bool close = window_row_hit(win_mouse, 8, p);
-    window_text(win_mouse, 8, "CLOSE", close ? 1 : 0);
+    const Point p = cursor();
+    window_text(win_controls, 1, "CONTROLS", 2);
+    window_text(win_controls, 3, "MOUSE SPEED  " + multiplier(settings_.mouse_speed), 0);
+    volume_slider(win_controls, 4, settings_.mouse_speed, p);
+    window_text(win_controls, 6, "KEY / PAD SPEED  " + multiplier(settings_.pad_speed), 0);
+    volume_slider(win_controls, 7, settings_.pad_speed, p);
+    window_text(win_controls, 9, "Arrows/Stick Move  Z/A Click", 0);
+    window_text(win_controls, 10, "X/B Launch  Esc/Start Pause", 0);
+
+    const bool close = window_row_hit(win_controls, 12, p);
+    window_text(win_controls, 12, "CLOSE", close ? 1 : 0);
     if (close && take_click())
     {
         play(Sfx::close);
@@ -384,10 +399,9 @@ void Game::mouse_window()
     gfx_.cursor(p.x, p.y);
 }
 
-// Shared by the time-trial pause window and the free-mode stage select window.
+// The time-trial pause window's items.
 void Game::pause_window_actions(Win id, int try_again_row, int end_game_row, int cancel_row, Point p, bool active)
 {
-    auto &win = windows_[id];
     const auto item = [&](int row, std::string_view s) {
         const bool hover = active && window_row_hit(id, row, p);
         window_text(id, row, s, hover ? 1 : 0);
@@ -396,28 +410,43 @@ void Game::pause_window_actions(Win id, int try_again_row, int end_game_row, int
 
     if (item(try_again_row, "TRY AGAIN"))
     {
-        play(Sfx::change);
-        win.state = closing;
-        load_stage();
-        state_ = State::intro;
+        try_again(id);
     }
     if (item(end_game_row, "END GAME"))
     {
-        play(Sfx::change);
-        win.state = closing;
-        phase_ = 0;
-        flag_ = 0;
-        state_ = State::title;
+        end_game(id);
     }
     if (item(cancel_row, "CANCEL"))
     {
-        play(Sfx::close);
-        if (state_ == State::play)
-        {
-            resume_bgm();
-        }
-        win.state = closing;
+        cancel_pause(id);
     }
+}
+
+void Game::try_again(Win id)
+{
+    play(Sfx::change);
+    windows_[id].state = closing;
+    load_stage();
+    state_ = State::intro;
+}
+
+void Game::end_game(Win id)
+{
+    play(Sfx::change);
+    windows_[id].state = closing;
+    phase_ = 0;
+    flag_ = 0;
+    state_ = State::title;
+}
+
+void Game::cancel_pause(Win id)
+{
+    play(Sfx::close);
+    if (state_ == State::play)
+    {
+        resume_bgm();
+    }
+    windows_[id].state = closing;
 }
 
 void Game::pause_window()
@@ -468,41 +497,76 @@ void Game::stage_select_window()
         return;
     }
 
+    // Rebuild: a page of nine stage thumbnails to click, in place of the original's one large preview with
+    // PREVIOUS / NEXT / GOTO THIS STAGE.
     const Point p = cursor();
-    const auto hover = [&](int row) { return window_row_hit(win_stage_select, row, p); };
-    const bool prev = hover(16), next = hover(18), go = hover(21);
+    const int pages = (stage_count() + select_per_page - 1) / select_per_page;
+    select_page_ = std::clamp(select_page_, 0, pages - 1);
 
-    // stage preview
-    for (int j = 0; j < 13; ++j)
+    const auto inside = [&](int x, int y, int w, int h) { return x <= p.x && p.x < x + w && y <= p.y && p.y < y + h; };
+    // a label centred on cx; returns whether the cursor is on it
+    const auto button = [&](int cx, int y, std::string_view s, int colour_if_idle) {
+        const int w = Gfx::text_width(s);
+        const bool hover = inside(cx - w / 2 - 8, y, w + 16, 16);
+        gfx_.text(cx - w / 2, y, s, hover ? 1 : colour_if_idle);
+        return hover;
+    };
+
+    const int cx = win.x * 8 + win.w * 4; // window centre
+    const int left = cx - select_column_step, right = cx + select_column_step;
+    gfx_.text(cx - Gfx::text_width("STAGE SELECT") / 2, (win.y + 1) * 16, "STAGE SELECT", 2);
+    const bool again = button(left, 64, "TRY AGAIN", 0);
+    const bool end = button(right, 64, "END GAME", 0);
+
+    int picked = -1;
+    for (int slot = 0; slot < select_per_page; ++slot)
     {
-        for (int i = 0; i < 15; ++i)
+        const int stage = select_page_ * select_per_page + slot;
+        if (stage >= stage_count())
         {
-            gfx_.blit(win.x * 8 + 40 + 16 * i, (win.y + 7 + j) * 16, sprite::preview_tile);
+            break;
+        }
+        const int x = cx + (slot % 3 - 1) * select_column_step - thumbnail_width / 2;
+        const int y = 92 + (slot / 3) * 104;
+        const bool hover = inside(x - 4, y - 4, thumbnail_width + 8, thumbnail_height + 24);
+        draw_stage_thumbnail(stage, x, y);
+        const auto number = std::format("{}", stage + 1);
+        gfx_.text(x + (thumbnail_width - Gfx::text_width(number)) / 2, y + thumbnail_height + 2, number,
+                  hover ? 1 : stage == stage_ ? 2 : 0);
+        if (hover)
+        {
+            picked = stage;
         }
     }
-    draw_stage_preview(stage_sel_, win.x * 8 + 40, win.y * 16 + 112);
 
-    window_text(win_stage_select, 1, "STAGE SELECT", 2);
-    pause_window_actions(win_stage_select, 3, 5, 24, p, true);
-    window_text(win_stage_select, 16, "PREVIOUS", prev ? 1 : 0);
-    window_text(win_stage_select, 17, std::format("{}", stage_sel_ + 1), 2);
-    window_text(win_stage_select, 18, "NEXT", next ? 1 : 0);
-    window_text(win_stage_select, 21, "GOTO THIS STAGE", go ? 1 : 0);
-    if ((prev || next || go) && take_click())
+    const bool prev = pages > 1 && button(left, 408, "PREVIOUS", 0);
+    const bool next = pages > 1 && button(right, 408, "NEXT", 0);
+    const auto page = std::format("PAGE {}/{}", select_page_ + 1, pages);
+    gfx_.text(cx - Gfx::text_width(page) / 2, 408, page, 2);
+    const bool cancel = button(cx, 432, "CANCEL", 0);
+
+    if ((again || end || picked >= 0 || prev || next || cancel) && take_click())
     {
-        if (prev)
+        if (again)
         {
-            play(Sfx::open);
-            stage_sel_ = stage_sel_ == 0 ? stages::count - 1 : stage_sel_ - 1;
+            try_again(win_stage_select);
         }
-        else if (next)
+        else if (end)
+        {
+            end_game(win_stage_select);
+        }
+        else if (cancel)
+        {
+            cancel_pause(win_stage_select);
+        }
+        else if (prev || next)
         {
             play(Sfx::open);
-            stage_sel_ = stage_sel_ == stages::count - 1 ? 0 : stage_sel_ + 1;
+            select_page_ = (select_page_ + (next ? 1 : pages - 1)) % pages;
         }
         else
         {
-            stage_ = stage_sel_;
+            stage_ = picked;
             play(Sfx::change);
             load_stage();
             win.state = closing;
@@ -510,6 +574,38 @@ void Game::stage_select_window()
         }
     }
     gfx_.cursor(p.x, p.y);
+}
+
+// A small picture of a stage: each block as a 6x3 dot in its colour, on the preview background.
+void Game::draw_stage_thumbnail(int stage, int x, int y)
+{
+    for (int ty = 0; ty < thumbnail_height; ty += 16)
+    {
+        for (int tx = 0; tx < thumbnail_width; tx += 16)
+        {
+            const Rect tile = sprite::preview_tile;
+            gfx_.blit(x + tx, y + ty,
+                      {tile.x, tile.y, std::min(16, thumbnail_width - tx), std::min(16, thumbnail_height - ty)});
+        }
+    }
+    const auto &layout = pack().stages[stage];
+    for (int row = 0; row < stages::rows; ++row)
+    {
+        for (int col = 0; col < stages::columns; ++col)
+        {
+            const auto cell = layout[col + row * stages::columns];
+            if (cell == stages::empty)
+            {
+                continue;
+            }
+            if (const int icon = preview_icon(cell); icon >= 0)
+            {
+                // the middle of the stage preview's mini block, which is its plain colour
+                const Rect mini = sprite::mini_block(icon);
+                gfx_.blit(x + 6 * col, y + 3 * row, {mini.x + 5, mini.y + 2, 6, 3});
+            }
+        }
+    }
 }
 
 void Game::reset_window()
@@ -541,10 +637,12 @@ void Game::reset_window()
     {
         if (ok)
         {
-            // like the original, OK resets but leaves the window open
+            // like the original, OK resets but leaves the window open; the rebuild keeps the settings in
+            // block.ini and also deletes the replays, which belonged to the records
             play(Sfx::change);
             data_ = save::Data{};
-            apply_volumes();
+            std::error_code ec;
+            std::filesystem::remove_all(save_dir_ / "replays", ec);
             stage_rank_this_run_.fill(10);
             total_rank_this_run_ = 10;
             save_data();
@@ -585,16 +683,16 @@ void Game::broken_window()
         {
             play(Sfx::close);
             win.state = closing;
-            save_data();
+            settings_changed_ = true;
         }
         else
         {
             play(Sfx::open);
-            data_.show_broken_blocks = yes;
+            settings_.show_broken_blocks = yes;
         }
     }
 
-    gfx_.blit(win.x * 8 + 120, (win.y + (data_.show_broken_blocks ? 6 : 8)) * 16, sprite::ball_normal);
+    gfx_.blit(win.x * 8 + 120, (win.y + (settings_.show_broken_blocks ? 6 : 8)) * 16, sprite::ball_normal);
     window_text(win_broken, 1, "DISPLAY BROKEN BLOCKS", 2);
     window_text(win_broken, 3, "For Better Performance,", 0);
     window_text(win_broken, 4, "Select 'NO'.", 0);
@@ -630,6 +728,14 @@ void Game::mode_select_window()
     };
 
     window_text(win_mode_select, 1, "MODE SELECT", 2);
+    // rebuild: choose the stage pack, when there are custom ones
+    if (packs_.size() > 1 && item(3, "STAGES : " + pack().name))
+    {
+        play(Sfx::open);
+        pack_ = (pack_ + 1) % packs_.size();
+        settings_.stage_pack = pack_ == 0 ? std::string{} : pack().id;
+        settings_changed_ = true;
+    }
     const auto start = [&](int mode) {
         win.state = closing;
         play(Sfx::open);
@@ -638,13 +744,13 @@ void Game::mode_select_window()
         phase_ = 0;
         state_ = State::name_entry;
     };
-    if (item(4, "TIME TRIAL MODE"))
+    if (item(5, "TIME TRIAL MODE"))
     {
         start(1);
     }
-    if (item(6, "FREE MODE"))
+    if (item(7, "FREE MODE"))
     {
-        if (data_.free_mode_unlocked)
+        if (free_mode_available())
         {
             start(2);
         }
@@ -654,7 +760,7 @@ void Game::mode_select_window()
             windows_[win_message].state = opening;
         }
     }
-    if (item(9, "CANCEL"))
+    if (item(10, "CANCEL"))
     {
         play(Sfx::close);
         win.state = closing;

@@ -1,9 +1,12 @@
 // Rendering and full-screen states. See re/notes/rendering.md, menus.md and ranking_save_sound.md.
 #include "game.hpp"
 
+#include <algorithm>
 #include <cmath>
+#include <filesystem>
 #include <format>
 #include <optional>
+#include <system_error>
 
 namespace
 {
@@ -18,6 +21,18 @@ constexpr double spring_accel = 340.00000000000006;
 std::string format_time(int ms)
 {
     return std::format("{:02}m{:02}s{:02}", ms / 60000, (ms % 60000) / 1000, (ms % 1000) / 10);
+}
+
+// A split time difference: "-00m01s23" when ahead of the best run, "+..." when behind.
+std::string format_delta(int ms)
+{
+    return (ms <= 0 ? "-" : "+") + format_time(ms < 0 ? -ms : ms);
+}
+
+// Ahead in blue, behind in red.
+int delta_colour(int ms)
+{
+    return ms <= 0 ? 1 : 2;
 }
 
 // trunc(n * 1000 / d) for the voxel projections; nullopt where the original's result would be off-screen garbage
@@ -40,28 +55,6 @@ int centred(int width, std::string_view s)
     return (width - Gfx::text_width(s)) / 2;
 }
 
-// mini block icon in the stage previews, by block type
-int preview_icon(int type)
-{
-    switch (type)
-    {
-        case 0: return 0;
-        case 1: return 1;
-        case 2: return 2;
-        case 5: return 3;
-        case 6: return 4;
-        case 7: return 5;
-        case 9: return 6;
-        case 10: return 7;
-        case 12: return 8;
-        case 13: return 9;
-        case 14: return 10;
-        case 15: return 11;
-        case 16: return 12;
-        default: return -1;
-    }
-}
-
 void tile_screen(Gfx &gfx, Rect tile)
 {
     for (int y = 0; y < Game::screen_height; y += 16)
@@ -77,7 +70,7 @@ void tile_screen(Gfx &gfx, Rect tile)
 
 void Game::draw_stage_preview(int stage, int x, int y)
 {
-    const auto &layout = stage_data_[stage];
+    const auto &layout = pack().stages[stage];
     for (int row = 0; row < stages::rows; ++row)
     {
         for (int col = 0; col < stages::columns; ++col)
@@ -132,16 +125,30 @@ void Game::render_playfield()
     gfx_.digits(597, 1, std::format("{:02}", stage_ + 1), 1);
     gfx_.text(512, 64, "TIME", 2);
     draw_time_digits(stage_ms_[stage_], 5, 96);
-    const auto &best = data_.stage_ranking[stage_][0];
+    const auto &best = records().stage_ranking[stage_][0];
     gfx_.text(512, 112, best.name, 0);
     gfx_.text(522, 128, format_time(best.time_ms), 0);
-    if (mode_ == 1)
+    if (playback_)
+    {
+        // rebuild: whose replay this is, in place of the total time
+        gfx_.text(512, 160, "REPLAY", 2);
+        gfx_.text(512, 176, playback_->name, 0);
+        gfx_.text(522, 192, format_time(playback_->time_ms), 0);
+        gfx_.text(512, 208, "Click or", 0);
+        gfx_.text(512, 224, "Key to Exit", 0);
+    }
+    else if (mode_ == 1)
     {
         gfx_.text(512, 160, "TOTAL TIME", 2);
         draw_time_digits(total_ms_, 11, 192);
-        const auto &total_best = data_.total_ranking[0];
+        const auto &total_best = records().total_ranking[0];
         gfx_.text(512, 208, total_best.name, 0);
         gfx_.text(522, 224, format_time(total_best.time_ms), 0);
+        // rebuild: the last split against the best run
+        if (const auto delta = split_delta(stage_ - 1))
+        {
+            gfx_.text(522, 240, format_delta(*delta), delta_colour(*delta));
+        }
     }
     gfx_.text(512, 256, "BALLS", 2);
     for (int i = 1; i <= 10 && i <= stock_; ++i)
@@ -211,7 +218,7 @@ void Game::render_playfield()
         }
     }
 
-    if (data_.show_broken_blocks)
+    if (settings_.show_broken_blocks)
     {
         for (const int k : dying_)
         {
@@ -440,7 +447,7 @@ void Game::screen_intro()
     }
 
     const int sx = static_cast<int>(slide_x_);
-    if (stage_ != stages::count - 1)
+    if (stage_ != stage_count() - 1)
     {
         gfx_.text(sx, 160, "STAGE", 0, track::id(track::text, 0));
         gfx_.digits(sx + 85, 9, std::format("{:02}", stage_ + 1), 0, track::id(track::text, 0x10));
@@ -456,15 +463,32 @@ void Game::screen_intro()
 void Game::screen_clear()
 {
     const int time = stage_ms_[stage_];
-    auto &table = data_.stage_ranking[stage_];
+    auto &table = records().stage_ranking[stage_];
 
     if (phase_ == 0)
     {
         stop(Sfx::mugen);
         stop(Sfx::bgm);
         play(Sfx::clear);
-        stage_rank_this_run_[stage_] = save::insert(table, time, data_.player_name);
-        save_data(); // the original saved only on exit
+        if (playback_)
+        {
+            playback_matched_ = time == playback_->time_ms && playback_tick_ == playback_->ticks.size();
+            if (!playback_matched_)
+            {
+                SDL_Log("replay of stage %d cleared at %d ms after %zu of %zu ticks; recorded %d ms", stage_ + 1,
+                        time, playback_tick_, playback_->ticks.size(), playback_->time_ms);
+            }
+        }
+        else
+        {
+            stage_rank_this_run_[stage_] = save::insert(table, time, data_.player_name);
+            finish_recording(stage_rank_this_run_[stage_]);
+            if (mode_ == 1)
+            {
+                run_splits_[stage_] = total_ms_;
+            }
+            save_data(); // the original saved only on exit
+        }
         vox_.clear();
         vox_.build(gfx_, "CLEAR!!");
         angle_ = 0.0;
@@ -503,7 +527,24 @@ void Game::screen_clear()
         }
     }
 
+    if (playback_)
+    {
+        constexpr std::string_view done = "Click L Button to Return !!";
+        gfx_.text(centred(512, done), 256, done, 0);
+        if (!playback_matched_)
+        {
+            constexpr std::string_view off = "This Replay Did Not Play Back Exactly";
+            gfx_.text(centred(512, off), 320, off, 2);
+        }
+        return;
+    }
+
     gfx_.text(centred(512, "Click L Button to Next Stage !!"), 256, "Click L Button to Next Stage !!", 0);
+    if (const auto delta = split_delta(stage_))
+    {
+        const auto split = "SPLIT " + format_delta(*delta);
+        gfx_.text(centred(512, split), 368, split, delta_colour(*delta));
+    }
     if (stage_rank_this_run_[stage_] == 0)
     {
         if (flag_ == 0)
@@ -567,6 +608,12 @@ void Game::screen_game_over()
             gfx_.blit(252 + *sx, 156 - *sy, vox_.rects[v.kind], vox_.id(i));
         }
     }
+    if (playback_)
+    {
+        constexpr std::string_view off = "This Replay Did Not Play Back Exactly";
+        gfx_.text(centred(512, off), 256, off, 2);
+        return;
+    }
     gfx_.text(130, 256, "Click L Button to Retry !!", 0);
 }
 
@@ -588,7 +635,14 @@ void Game::screen_ending()
     {
         stop(Sfx::ending);
         play(Sfx::ending, true);
-        total_rank_this_run_ = save::insert(data_.total_ranking, total_ms_, data_.player_name);
+        total_rank_this_run_ = save::insert(records().total_ranking, total_ms_, data_.player_name);
+        if (total_rank_this_run_ == 0)
+        {
+            // rebuild: the new best run's splits, for comparing later runs against
+            auto &splits = records().best_splits;
+            splits.fill(0);
+            std::copy_n(run_splits_.begin(), stage_count(), splits.begin());
+        }
         save_data();
         end_top_line_ = 0;
         end_scroll_px_ = 0;
@@ -643,12 +697,13 @@ void Game::screen_ending()
 
     gfx_.text(centred(640, "CONGRATURATIONS !!"), 32, "CONGRATURATIONS !!", 2);
 
+    const int lines = stage_count() + 18; // 68 for the original's 50 stages
     for (int i = 0; i < 15; ++i)
     {
         int line = end_top_line_ + i;
-        if (line > 67)
+        if (line >= lines)
         {
-            line -= 68;
+            line -= lines;
         }
         std::string s;
         int colour = 0;
@@ -657,11 +712,15 @@ void Game::screen_ending()
             s = "RESULT";
             colour = 2;
         }
-        else if (line >= 16 && line <= 65)
+        else if (line >= 16 && line < 16 + stage_count())
         {
             s = std::format("STAGE {:02}  :  {}", line - 15, format_time(stage_ms_[line - 16]));
+            if (const auto delta = split_delta(line - 16))
+            {
+                s += "  " + format_delta(*delta); // rebuild
+            }
         }
-        else if (line == 67)
+        else if (line == lines - 1)
         {
             s = "TOTAL TIME  :  " + format_time(total_ms_);
             colour = 1;
@@ -717,8 +776,7 @@ void Game::screen_name_entry()
         for (int c = 0; c < 32; ++c)
         {
             const char ch = static_cast<char>(0x20 * (r + 1) + c);
-            // '$' separates fields in the save files, so unlike the original it cannot be entered
-            if (ch == ' ' || ch == 0x7f || ch == '$')
+            if (ch == ' ' || ch == 0x7f)
             {
                 continue;
             }
@@ -780,6 +838,8 @@ void Game::screen_name_entry()
         stage_rank_this_run_.fill(10);
         total_ms_ = 0;
         total_rank_this_run_ = 10;
+        run_splits_.fill(0);
+        run_pb_ = records().best_splits;
         load_stage();
         state_ = State::intro;
         save_data();
@@ -833,6 +893,12 @@ void Game::screen_ranking()
     {
         ranking_view_ = 1;
         stage_sel_ = 0;
+        if (ranking_return_stage_)
+        {
+            // back from a replay: stay on its stage
+            stage_sel_ = std::min(*ranking_return_stage_, stage_count() - 1);
+            ranking_return_stage_.reset();
+        }
         vox_.clear();
         ang_vel_ = -0.2;
         play(Sfx::ranking, true);
@@ -879,7 +945,7 @@ void Game::screen_ranking()
         }
     }
 
-    const save::RankTable *table = &data_.total_ranking;
+    const save::RankTable *table = &records().total_ranking;
     int highlight = total_rank_this_run_;
     if (ranking_view_ == 1)
     {
@@ -891,7 +957,7 @@ void Game::screen_ranking()
             }
         }
         draw_stage_preview(stage_sel_, 16, 16);
-        table = &data_.stage_ranking[stage_sel_];
+        table = &records().stage_ranking[stage_sel_];
         highlight = stage_rank_this_run_[stage_sel_];
     }
 
@@ -918,7 +984,11 @@ void Game::screen_ranking()
     const bool stage_hover = hit(12, 256, 640);
     label(448, 160, "TOTAL TIME", total_hover ? 1 : ranking_view_ == 0 ? 2 : 0);
     label(448, 192, "STAGE TIME", stage_hover ? 1 : ranking_view_ == 1 ? 2 : 0);
-    bool prev_hover = false, next_hover = false;
+    if (pack().id != stages::original_id)
+    {
+        label(448, 224, pack().name, 0); // rebuild: which stage pack
+    }
+    bool prev_hover = false, next_hover = false, replay_hover = false;
     if (ranking_view_ == 1)
     {
         prev_hover = hit(10, 16, 256);
@@ -926,11 +996,18 @@ void Game::screen_ranking()
         label(136, 160, "PREVIOUS", prev_hover ? 1 : 0);
         label(136, 176, std::format("{}", stage_sel_ + 1), 2);
         label(136, 192, "NEXT", next_hover ? 1 : 0);
+        // rebuild: the best time's replay, when there is one
+        std::error_code ec;
+        if (std::filesystem::exists(replay::best_path(save_dir_, pack().id, stage_sel_), ec))
+        {
+            replay_hover = hit(14, 16, 256);
+            label(136, 224, "WATCH REPLAY", replay_hover ? 1 : 0);
+        }
     }
     const bool exit_hover = hit(28, -1, 641);
     label(320, 448, "EXIT", exit_hover ? 1 : 0);
 
-    if ((total_hover || stage_hover || prev_hover || next_hover || exit_hover) && take_click())
+    if ((total_hover || stage_hover || prev_hover || next_hover || replay_hover || exit_hover) && take_click())
     {
         if (total_hover)
         {
@@ -944,13 +1021,21 @@ void Game::screen_ranking()
         }
         else if (prev_hover)
         {
-            stage_sel_ = stage_sel_ == 0 ? stages::count - 1 : stage_sel_ - 1;
+            stage_sel_ = stage_sel_ == 0 ? stage_count() - 1 : stage_sel_ - 1;
             play(Sfx::open);
         }
         else if (next_hover)
         {
-            stage_sel_ = stage_sel_ == stages::count - 1 ? 0 : stage_sel_ + 1;
+            stage_sel_ = stage_sel_ == stage_count() - 1 ? 0 : stage_sel_ + 1;
             play(Sfx::open);
+        }
+        else if (replay_hover)
+        {
+            start_playback(stage_sel_);
+            if (playback_)
+            {
+                return;
+            }
         }
         else
         {

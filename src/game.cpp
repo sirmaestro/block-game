@@ -4,13 +4,21 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <utility>
 
-Game::Game(Gfx &gfx, Audio &audio, settings::Settings &settings, std::vector<stages::Stage> stage_data,
+Game::Game(Gfx &gfx, Audio &audio, settings::Settings &settings, std::vector<stages::Pack> packs,
            std::filesystem::path save_dir)
-    : gfx_(gfx), audio_(audio), stage_data_(std::move(stage_data)), save_dir_(std::move(save_dir)),
+    : gfx_(gfx), audio_(audio), packs_(std::move(packs)), save_dir_(std::move(save_dir)),
       data_(save::load(save_dir_)), settings_(settings)
 {
+    for (std::size_t i = 0; i < packs_.size(); ++i)
+    {
+        if (packs_[i].id == settings_.stage_pack)
+        {
+            pack_ = i;
+        }
+    }
     apply_volumes();
     rand_seed_ = static_cast<unsigned>(SDL_GetTicks());
     stage_rank_this_run_.fill(10);
@@ -35,11 +43,21 @@ bool Game::take_settings_changed()
 
 void Game::apply_volumes()
 {
-    audio_.set_volumes(data_.volume, settings_.music_volume, settings_.sound_volume);
+    audio_.set_volumes(settings_.master_volume, settings_.music_volume, settings_.sound_volume);
+}
+
+bool Game::free_mode_available() const
+{
+    // custom stage packs can be played in any order from the start
+    return data_.free_mode_unlocked || pack().id != stages::original_id;
 }
 
 void Game::focus_lost()
 {
+    if (playback_)
+    {
+        return; // a replay keeps playing in the background
+    }
     left_button_up();
     // the original kept running when it lost focus; pause instead, as a key press would
     if (in_game_state() && pause_windows_closed())
@@ -54,7 +72,7 @@ LiveOffsets Game::live_offsets() const
     const Point now = cursor();
     live.cursor_dx = now.x - drawn_cursor_.x;
     live.cursor_dy = now.y - drawn_cursor_.y;
-    if (state_ == State::play && pause_windows_closed())
+    if (state_ == State::play && pause_windows_closed() && !playback_)
     {
         // the paddle follows the mouse at the display rate, clamped as update_paddle() will clamp it
         const int lo = 8 * paddle_units_ + 16;
@@ -87,6 +105,10 @@ void Game::set_cursor(int x, int y)
 
 void Game::mouse_moved(double dx, double dy)
 {
+    if (playback_)
+    {
+        return;
+    }
     // GetCursorPos in the original's exclusive full screen mode: clamped to the 640x480 screen
     mouse_x_ = std::clamp(mouse_x_ + dx, 0.0, screen_width - 1.0);
     mouse_y_ = std::clamp(mouse_y_ + dy, 0.0, screen_height - 1.0);
@@ -175,9 +197,9 @@ void Game::run_tick(int dt_ms)
             {
                 screen_window();
             }
-            if (windows_[win_mouse].state != closed)
+            if (windows_[win_controls].state != closed)
             {
-                mouse_window();
+                controls_window();
             }
             if (windows_[win_mode_select].state != closed)
             {
@@ -224,7 +246,8 @@ void Game::run_tick(int dt_ms)
                 if (++end_scroll_px_ > 15)
                 {
                     end_scroll_px_ = 0;
-                    if (++end_top_line_ > 67)
+                    // the original's 68 lines: headings, one per stage, a blank and the total
+                    if (++end_top_line_ > stage_count() + 17)
                     {
                         end_top_line_ = 0;
                     }
@@ -236,15 +259,23 @@ void Game::run_tick(int dt_ms)
         case State::play:
             if (pause_windows_closed())
             {
+                record_or_replay_tick();
+                if (state_ != State::play)
+                {
+                    return; // the replay ran out
+                }
+                // Rebuild: the stage's own tick count sets the timers' 16/17 ms steps, so a replay sees the
+                // same steps however the stage was paused.
+                const int play_ms = next_play_tick_ms();
                 for (int *timer : {&big_ms_, &small_ms_, &reverse_ms_, &mugen_ms_})
                 {
                     if (*timer > 0)
                     {
-                        *timer -= dt_ms;
+                        *timer -= play_ms;
                     }
                 }
-                stage_ms_[stage_] += dt_ms;
-                total_ms_ += dt_ms;
+                stage_ms_[stage_] += play_ms;
+                total_ms_ += play_ms;
                 physics_step();
                 physics_step();
                 update_items_and_debris();
@@ -326,6 +357,11 @@ void Game::run_tick(int dt_ms)
 
 void Game::key_down()
 {
+    if (playback_)
+    {
+        end_playback();
+        return;
+    }
     if (in_game_state())
     {
         stop(Sfx::bgm);
@@ -339,15 +375,104 @@ void Game::key_down()
         {
             windows_[win_stage_select].state = opening;
             stage_sel_ = stage_;
+            select_page_ = stage_ / select_per_page;
         }
         saved_cursor_ = cursor();
     }
-    else if (state_ == State::ending)
+    else
+    {
+        action_key_down();
+    }
+}
+
+bool Game::escape_key()
+{
+    if (playback_)
+    {
+        end_playback();
+        return false;
+    }
+    if (in_game_state())
+    {
+        // Esc toggles the pause / stage select window
+        for (const Win id : {win_pause, win_stage_select})
+        {
+            const auto &win = windows_[id];
+            if (win.state == opening && win.half_h == win.h * 8 - 8)
+            {
+                cancel_pause(id); // fully open: same as CANCEL
+                return false;
+            }
+            if (win.state != closed)
+            {
+                return false; // still opening or closing
+            }
+        }
+        key_down();
+        return false;
+    }
+    switch (state_)
+    {
+        case State::title:
+            return !close_top_title_window();
+        case State::ending:
+            action_key_down();
+            return false;
+        case State::ranking:
+        case State::name_entry:
+            // back to the title, as EXIT does
+            stop(Sfx::ranking);
+            stop(Sfx::nameentry);
+            play(Sfx::change);
+            phase_ = 0;
+            flag_ = 0;
+            stage_sel_ = 0;
+            ranking_view_ = 0;
+            state_ = State::title;
+            return false;
+        default:
+            return false;
+    }
+}
+
+// Closes the title screen's top-most open window, as its CLOSE / CANCEL would. False if none was open.
+bool Game::close_top_title_window()
+{
+    // children before their parents
+    constexpr Win order[] = {win_message, win_volume, win_screen, win_controls, win_reset, win_broken,
+                             win_mode_select, win_options};
+    for (const Win id : order)
+    {
+        auto &win = windows_[id];
+        if (win.state == closed)
+        {
+            continue;
+        }
+        if (win.state == opening)
+        {
+            play(Sfx::close);
+            win.state = closing;
+            if (id == win_volume || id == win_screen || id == win_controls || id == win_broken)
+            {
+                settings_changed_ = true;
+            }
+        }
+        return true; // a closing window counts too: wait for it
+    }
+    return false;
+}
+
+void Game::action_key_down()
+{
+    if (state_ == State::ending)
     {
         stop(Sfx::ending);
         phase_ = 0;
         flag_ = 0;
-        data_.free_mode_unlocked = true;
+        if (pack().id == stages::original_id)
+        {
+            data_.free_mode_unlocked = true;
+        }
         state_ = State::ranking;
         save_data();
     }
@@ -355,13 +480,18 @@ void Game::key_down()
 
 void Game::left_button_down()
 {
+    if (playback_)
+    {
+        end_playback();
+        return;
+    }
     if (pause_windows_closed() && phase_ != 0 && (state_ == State::clear || state_ == State::game_over))
     {
         bool load = true;
         if (state_ == State::clear)
         {
             phase_ = 0;
-            if (++stage_ == stages::count)
+            if (++stage_ == stage_count())
             {
                 if (mode_ == 1)
                 {
@@ -393,6 +523,14 @@ void Game::left_button_up()
 
 void Game::right_button_down()
 {
+    if (!playback_ && launch_ball() && recording_active_)
+    {
+        ++pending_launches_; // like the original, this works while paused too
+    }
+}
+
+bool Game::launch_ball()
+{
     if (balls_.size() < 500 && state_ == State::play && (infinite_ || stock_ > 0))
     {
         play(Sfx::ball);
@@ -401,7 +539,9 @@ void Game::right_button_down()
         {
             --stock_;
         }
+        return true;
     }
+    return false;
 }
 
 // ---- stage load (FUN_004012d0) ------------------------------------------------------------------------
@@ -425,6 +565,22 @@ void Game::load_stage()
     paddle_tilt_ = 0.0;
     paddle_vy_ = 0.0;
     gravity_ = 0.017;
+    spawn_rotor_ = 0;
+    play_ticks_ = 0;
+    pending_launches_ = 0;
+
+    // start recording a replay (not while watching one)
+    recording_active_ = !playback_;
+    recording_ = {};
+    if (recording_active_)
+    {
+        recording_.pack_id = pack().id;
+        recording_.stage = stage_;
+        recording_.stage_hash = stages::hash(pack().stages[stage_]);
+        recording_.seed = rand_seed_;
+        recording_.hit_seg = hit_seg_;
+        recording_.ticks.reserve(60 * 120);
+    }
 
     for (auto &block : blocks_)
     {
@@ -434,7 +590,7 @@ void Game::load_stage()
     }
 
     const auto is_arrow = [](int type) { return type >= 12 && type <= 15; };
-    const auto &layout = stage_data_[stage_];
+    const auto &layout = pack().stages[stage_];
     for (int row = 0; row < stages::rows; ++row)
     {
         for (int col = 0; col < stages::columns; ++col)
@@ -494,4 +650,123 @@ void Game::load_stage()
             }
         }
     }
+}
+
+// ---- replays and split times ----------------------------------------------------------------------------
+
+int Game::next_play_tick_ms()
+{
+    const auto ms = [](int tick) { return static_cast<int>(static_cast<long long>(tick) * 1000 / ticks_per_second); };
+    ++play_ticks_;
+    return ms(play_ticks_) - ms(play_ticks_ - 1);
+}
+
+// Called before each physics tick: feed the replay's input, or record the player's.
+void Game::record_or_replay_tick()
+{
+    if (playback_)
+    {
+        if (playback_tick_ >= playback_->ticks.size())
+        {
+            SDL_Log("replay ran out of input on stage %d", stage_ + 1);
+            end_playback();
+            return;
+        }
+        const auto &t = playback_->ticks[playback_tick_++];
+        mouse_x_ = t.cursor_x;
+        left_down_ = t.left_down;
+        for (int i = 0; i < t.launches; ++i)
+        {
+            launch_ball();
+        }
+        return;
+    }
+    if (!recording_active_)
+    {
+        return;
+    }
+    if (recording_.ticks.size() >= 60u * 60 * 100)
+    {
+        recording_active_ = false; // longer than the timer can show
+        return;
+    }
+    recording_.ticks.push_back({static_cast<std::int16_t>(cursor().x), left_down_,
+                                static_cast<std::uint8_t>(std::min(pending_launches_, 255))});
+    pending_launches_ = 0;
+}
+
+// At a stage clear: keep the replay if the time is the stage's new best.
+void Game::finish_recording(int rank)
+{
+    if (!recording_active_)
+    {
+        return;
+    }
+    recording_active_ = false;
+    if (rank != 0)
+    {
+        return;
+    }
+    const auto &best = records().stage_ranking[stage_][0];
+    recording_.time_ms = stage_ms_[stage_];
+    recording_.name = best.name;
+    recording_.year = best.year;
+    recording_.month = best.month;
+    recording_.day = best.day;
+    recording_.hour = best.hour;
+    recording_.minute = best.minute;
+    const auto path = replay::best_path(save_dir_, pack().id, stage_);
+    if (!replay::write(path, recording_))
+    {
+        SDL_Log("could not save replay %s", path.string().c_str());
+    }
+}
+
+void Game::start_playback(int stage)
+{
+    auto r = replay::read(replay::best_path(save_dir_, pack().id, stage));
+    if (!r || r->pack_id != pack().id || r->stage != stage || r->stage_hash != stages::hash(pack().stages[stage]))
+    {
+        play(Sfx::error); // missing, damaged, or recorded on a different version of the stage
+        return;
+    }
+    stop(Sfx::ranking);
+    play(Sfx::change);
+    playback_ = std::move(*r);
+    playback_tick_ = 0;
+    playback_matched_ = false;
+    stage_ = stage;
+    load_stage();
+    rand_seed_ = playback_->seed;
+    hit_seg_ = playback_->hit_seg;
+    left_down_ = false;
+    click_pending_ = false;
+    state_ = State::intro;
+}
+
+void Game::end_playback()
+{
+    for (const auto id : {Sfx::bgm, Sfx::mugen, Sfx::clear, Sfx::gameover})
+    {
+        stop(id);
+    }
+    playback_.reset();
+    reset_windows();
+    left_down_ = false;
+    click_pending_ = false;
+    ranking_return_stage_ = stage_;
+    phase_ = 0;
+    flag_ = 0;
+    state_ = State::ranking;
+}
+
+// How far ahead (negative) or behind the best time-trial run this run was when it cleared `stage`.
+std::optional<int> Game::split_delta(int stage) const
+{
+    if (mode_ != 1 || playback_ || stage < 0 || stage >= stage_count() || run_pb_[stage] <= 0 ||
+        run_splits_[stage] <= 0)
+    {
+        return std::nullopt;
+    }
+    return run_splits_[stage] - run_pb_[stage];
 }

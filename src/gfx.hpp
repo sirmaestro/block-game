@@ -110,7 +110,7 @@ class Gfx
     void render(double alpha, const LiveOffsets &live);
 
     // Puts the picture in the window; returns where it went, in output pixels.
-    SDL_FRect compose(settings::Scaling scaling, bool side_frame);
+    SDL_FRect compose(settings::Scaling scaling, settings::Filter filter, bool side_frame);
 
     // Blits a sprite with its top-left at (x, y). Like the original, a sprite that is even partly
     // off the 640x480 screen is skipped entirely.
@@ -152,6 +152,8 @@ class Gfx
     SDL_Renderer *renderer_{};
     SDL_Texture *texture_{};
     SDL_Texture *target_{};
+    SDL_Texture *upscaled_{}; // the picture at a whole-number scale, for the sharp filter
+    int upscaled_factor_ = 0;
     SDL_Surface *surface_{};
     std::vector<DrawOp> ops_;
     std::unordered_map<std::uint32_t, Position> previous_;

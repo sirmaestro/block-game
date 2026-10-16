@@ -45,6 +45,10 @@ jobs:
       - name: Build
         run: cmake --build build --config Release --parallel
 
+      # includes playing back reference replays, which checks the physics give the same results on every OS
+      - name: Test
+        run: ctest --test-dir build -C Release --output-on-failure
+
       - name: Sign the app bundle (ad hoc)
         if: runner.os == 'macOS'
         run: codesign --force --deep --sign - build/BLOCK.app

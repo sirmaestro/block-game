@@ -3,7 +3,10 @@
 #include <SDL3/SDL.h>
 
 #include <array>
+#include <cstdint>
 #include <filesystem>
+#include <optional>
+#include <string_view>
 #include <vector>
 
 // Sound ids, matching the original's EZSound slots.
@@ -33,11 +36,15 @@ enum class Sfx
 };
 
 // One voice per sound, like the original's single DirectSound buffer per id: playing a sound that is
-// already playing restarts it. Missing wav files are silent, as the original shipped without sounds.
+// already playing restarts it. The sounds are built in as Ogg Vorbis; a .wav or .ogg of the same name in
+// wave_dir replaces one, as the original game played whatever wav files it found there.
 class Audio
 {
   public:
     bool init(const std::filesystem::path &wave_dir);
+
+    // Decodes a built-in mono sound, for tests.
+    static std::optional<std::vector<std::int16_t>> decode_builtin(std::string_view name);
     void shutdown();
 
     // Stop-then-play, as the game always did.

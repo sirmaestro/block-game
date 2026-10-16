@@ -1,5 +1,7 @@
 #include "settings.hpp"
 
+#include "save.hpp"
+
 #include <algorithm>
 #include <charconv>
 #include <cmath>
@@ -45,6 +47,7 @@ std::optional<int> to_int(std::string_view s)
 
 constexpr std::string_view display_names[] = {"windowed", "borderless", "fullscreen"};
 constexpr std::string_view scaling_names[] = {"pixel_perfect", "fit", "stretch"};
+constexpr std::string_view filter_names[] = {"nearest", "sharp", "scanlines"};
 
 template <class Enum, std::size_t N>
 std::optional<Enum> from_name(std::string_view value, const std::string_view (&names)[N])
@@ -72,6 +75,11 @@ Settings load(const std::filesystem::path &dir)
     std::ifstream file{dir / file_name};
     if (!file)
     {
+        if (const auto legacy = save::load_legacy_options(dir))
+        {
+            s.master_volume = legacy->volume;
+            s.show_broken_blocks = legacy->show_broken_blocks;
+        }
         return s;
     }
 
@@ -102,6 +110,10 @@ Settings load(const std::filesystem::path &dir)
         {
             s.scaling = from_name<Scaling>(value, scaling_names).value_or(s.scaling);
         }
+        else if (key == "filter")
+        {
+            s.filter = from_name<Filter>(value, filter_names).value_or(s.filter);
+        }
         else if (key == "side_frame" && number)
         {
             s.side_frame = *number != 0;
@@ -126,6 +138,23 @@ Settings load(const std::filesystem::path &dir)
         {
             s.window_height = std::clamp(*number, 480, 16384);
         }
+        else if (key == "window_x" && number)
+        {
+            s.window_x = *number;
+            s.has_window_position = true;
+        }
+        else if (key == "window_y" && number)
+        {
+            s.window_y = *number;
+        }
+        else if (key == "monitor")
+        {
+            s.monitor = value;
+        }
+        else if (key == "master_volume")
+        {
+            slider(s.master_volume);
+        }
         else if (key == "music_volume")
         {
             slider(s.music_volume);
@@ -138,36 +167,63 @@ Settings load(const std::filesystem::path &dir)
         {
             slider(s.mouse_speed);
         }
+        else if (key == "pad_speed")
+        {
+            slider(s.pad_speed);
+        }
+        else if (key == "show_broken_blocks" && number)
+        {
+            s.show_broken_blocks = *number != 0;
+        }
+        else if (key == "stage_pack")
+        {
+            s.stage_pack = value;
+        }
     }
     return s;
 }
 
 bool write(const std::filesystem::path &dir, const Settings &s)
 {
-    const auto text = std::format(
-        "# BLOCK settings (the original game's options stay in block130.sys)\n"
-        "[display]\n"
-        "display={}\n"
-        "scaling={}\n"
-        "side_frame={}\n"
-        "vsync={}\n"
-        "fps_limit={}\n"
-        "smooth_motion={}\n"
-        "window_width={}\n"
-        "window_height={}\n"
-        "\n"
-        "[audio]\n"
-        "music_volume={}\n"
-        "sound_volume={}\n"
-        "\n"
-        "[input]\n"
-        "mouse_speed={}\n",
-        display_names[static_cast<int>(s.display)], scaling_names[static_cast<int>(s.scaling)], s.side_frame ? 1 : 0,
-        s.vsync ? 1 : 0, s.fps_limit, s.smooth_motion ? 1 : 0, s.window_width, s.window_height,
-        static_cast<int>(s.music_volume), static_cast<int>(s.sound_volume), static_cast<int>(s.mouse_speed));
-
-    std::ofstream file{dir / file_name, std::ios::binary | std::ios::trunc};
-    return file && file.write(text.data(), static_cast<std::streamsize>(text.size()));
+    std::string text = std::format("# BLOCK settings. Records are in block.sav.\n"
+                                   "[display]\n"
+                                   "display={}\n"
+                                   "scaling={}\n"
+                                   "filter={}\n"
+                                   "side_frame={}\n"
+                                   "vsync={}\n"
+                                   "fps_limit={}\n"
+                                   "smooth_motion={}\n"
+                                   "window_width={}\n"
+                                   "window_height={}\n",
+                                   display_names[static_cast<int>(s.display)], scaling_names[static_cast<int>(s.scaling)],
+                                   filter_names[static_cast<int>(s.filter)], s.side_frame ? 1 : 0, s.vsync ? 1 : 0,
+                                   s.fps_limit, s.smooth_motion ? 1 : 0, s.window_width, s.window_height);
+    if (s.has_window_position)
+    {
+        text += std::format("window_x={}\nwindow_y={}\n", s.window_x, s.window_y);
+    }
+    if (!s.monitor.empty())
+    {
+        text += std::format("monitor={}\n", s.monitor);
+    }
+    text += std::format("\n"
+                        "[audio]\n"
+                        "master_volume={}\n"
+                        "music_volume={}\n"
+                        "sound_volume={}\n"
+                        "\n"
+                        "[input]\n"
+                        "mouse_speed={}\n"
+                        "pad_speed={}\n"
+                        "\n"
+                        "[game]\n"
+                        "show_broken_blocks={}\n"
+                        "stage_pack={}\n",
+                        static_cast<int>(s.master_volume), static_cast<int>(s.music_volume),
+                        static_cast<int>(s.sound_volume), static_cast<int>(s.mouse_speed),
+                        static_cast<int>(s.pad_speed), s.show_broken_blocks ? 1 : 0, s.stage_pack);
+    return save::write_file(dir / file_name, text);
 }
 
 }
